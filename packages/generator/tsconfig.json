@@ -7,10 +7,8 @@
   },
   "include": ["src"],
   "references": [
-    { "path": "../graph" },
-    { "path": "../indexer" },
+    { "path": "../core" },
     { "path": "../change-analyzer" },
-    { "path": "../impact-analyzer" },
-    { "path": "../generator" }
+    { "path": "../parser-ts" }
   ]
 }

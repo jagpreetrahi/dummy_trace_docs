@@ -9,6 +9,7 @@
     { "path": "packages/indexer" },
     { "path": "packages/change-analyzer" },
     { "path": "packages/impact-analyzer" },
+    { "path": "packages/generator" },
     { "path": "packages/server" },
     { "path": "packages/cli" }
   ]

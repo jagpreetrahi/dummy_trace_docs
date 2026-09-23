@@ -2,6 +2,7 @@
 import { mkdir } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { analyzeChanges } from '@tracedocs/change-analyzer';
+import { createAnthropicProvider, createMockProvider, generateDocumentationUpdates } from '@tracedocs/generator';
 import { GraphStore } from '@tracedocs/graph';
 import { indexRepository } from '@tracedocs/indexer';
 import { analyzeImpact } from '@tracedocs/impact-analyzer';
@@ -154,6 +155,73 @@ program
       store.close();
     }
   });
+
+program
+  .command('generate')
+  .description(
+    'Propose documentation patches for REVIEW-level findings on modified symbols since --base. ' +
+      "Defaults to a fully offline mock provider — use --provider anthropic for real generation " +
+      "(requires an Anthropic API key configured; see docs/architecture.md). Never writes to disk itself.",
+  )
+  .argument('[path]', 'repository path', '.')
+  .requiredOption('--base <revision>', 'base revision to compare from')
+  .option('--provider <name>', 'mock (default) or anthropic', 'mock')
+  .action(async (pathArg: string, options: { base: string; provider: string }) => {
+    if (options.provider !== 'mock' && options.provider !== 'anthropic') {
+      throw new Error(`Unknown provider "${options.provider}" — expected "mock" or "anthropic".`);
+    }
+
+    const repoRoot = resolve(pathArg);
+    const changeSet = await analyzeChanges(repoRoot, options.base);
+    const store = await openGraphStore(repoRoot);
+
+    try {
+      const indexResult = await indexRepository(repoRoot, store);
+      const findings = analyzeImpact(changeSet, store, indexResult.repositoryId, indexResult.danglingReferences);
+      const provider = options.provider === 'anthropic' ? createAnthropicProvider() : createMockProvider();
+      const outcomes = await generateDocumentationUpdates(findings, changeSet, provider);
+
+      console.log(`Repository: ${repoRoot}`);
+      console.log(`Provider:   ${provider.name}`);
+
+      if (outcomes.length === 0) {
+        console.log('No findings qualified for patch generation (see `tracedocs impact` for the full finding list).');
+        return;
+      }
+
+      for (const { finding, result } of outcomes) {
+        const location = finding.sectionHeading ?? '(whole page)';
+        console.log(`\n${finding.documentPath} — ${location}`);
+
+        if (result.status === 'PROPOSED') {
+          console.log('  Status: PROPOSED');
+          console.log(`  Explanation: ${result.patch.explanation}`);
+          if (result.patch.assumptions.length > 0) {
+            console.log(`  Assumptions: ${result.patch.assumptions.join('; ')}`);
+          }
+          console.log('  --- original ---');
+          console.log(indent(result.patch.originalContent));
+          console.log('  --- proposed ---');
+          console.log(indent(result.patch.proposedContent));
+        } else if (result.status === 'NEEDS_MORE_INFORMATION') {
+          console.log('  Status: NEEDS_MORE_INFORMATION');
+          console.log(`  Reason: ${result.reason}`);
+        } else {
+          console.log('  Status: PROVIDER_UNAVAILABLE');
+          console.log(`  Reason: ${result.reason}`);
+        }
+      }
+    } finally {
+      store.close();
+    }
+  });
+
+function indent(text: string): string {
+  return text
+    .split('\n')
+    .map((line) => `    ${line}`)
+    .join('\n');
+}
 
 program.parseAsync(process.argv).catch((error: unknown) => {
   console.error(error instanceof Error ? error.message : error);

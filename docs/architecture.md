@@ -22,7 +22,7 @@ packages/
 ├── indexer/          wires scanner+parsers+graph into indexRepository() (Milestone 3 — done)
 ├── change-analyzer/  git diff -> structured change set (Milestone 5 — done)
 ├── impact-analyzer/  graph-based documentation impact rules (Milestone 6 — done)
-├── generator/        LLM provider abstraction + patch generation (Milestone 7)
+├── generator/        LLM provider abstraction + patch generation (Milestone 7 — done)
 ├── validator/         Markdown/patch validation (Milestone 8)
 ├── cli/              `tracedocs` command line entry point
 ├── server/           Fastify API over the graph (Milestone 4 — done)
@@ -426,6 +426,70 @@ receives a bounded context object, not the whole repository.
   auto-checkout as a side effect of an "analyze" command would be an
   unacceptable mutation of the user's working directory.
 
+## Key decisions made in Milestone 7
+
+- **Three outcomes, not two.** `GenerationResult` is `PROPOSED |
+  NEEDS_MORE_INFORMATION | PROVIDER_UNAVAILABLE`, deliberately keeping
+  "the model looked at the evidence and it's not enough" separate from
+  "the call itself failed" (network, auth, rate limit, an unparseable
+  response). Collapsing those into one "couldn't generate a patch"
+  outcome would hide a broken provider behind what looks like a
+  considered judgment — directly the kind of silent stage-skipping
+  Engineering Rule #18 rules out, and squarely what brief §13's "an AI
+  provider is unavailable" test scenario is checking for.
+- **Structured output via `client.messages.parse()` + `zodOutputFormat`,
+  not manual JSON parsing or hand-rolled tool-use extraction.** This is
+  the Anthropic SDK's own recommended pattern for schema-validated
+  responses — the parsed result is guaranteed to match the Zod schema or
+  `parsed_output` is `null`, which is treated as `PROVIDER_UNAVAILABLE`
+  rather than trying to salvage a malformed response.
+- **The generator package uses zod v4 independently of the server
+  package's zod v3.** `@anthropic-ai/sdk`'s `zodOutputFormat` helper is
+  built against zod v4's internal type surface (confirmed by a `tsc`
+  error when first tried against v3 — see `docs/lessons-learned.md`
+  entry 4's sibling issue, same category of generic-inference mismatch).
+  pnpm lets independent packages in the workspace depend on different
+  majors of the same library without conflict, so this is a one-line,
+  fully contained fix rather than a workspace-wide zod v3→v4 migration
+  the server package doesn't need.
+- **Patch generation is scoped to `modified` findings with
+  `action: 'REVIEW'` only** — never `removed`/`moved` (those still
+  surface as impact findings from Milestone 6, just without an
+  auto-generated patch) and never `NEEDS_MORE_INFORMATION` findings
+  (the affected doc was already touched in this diff; asking the model
+  to guess whether that already resolved things isn't a good use of a
+  call). For a removed or moved symbol, "propose replacement text" is a
+  genuinely different, harder problem — should the section be deleted,
+  marked deprecated, or rewritten to point at the new location? — that
+  needs product judgment this milestone doesn't attempt to encode.
+  Documented as a real scope boundary, not silently dropped.
+- **The mock provider is the CLI default; a real provider is opt-in via
+  `--provider anthropic`.** This is what makes the non-goal "a mandatory
+  paid LLM provider" concretely true rather than aspirational — the
+  entire pipeline through `tracedocs generate` runs, and every test in
+  this package runs, without any API key configured or network access.
+- **`createAnthropicProvider()` never throws — even with no credentials
+  configured anywhere.** Construction failures (no `ANTHROPIC_API_KEY`,
+  no `ant auth login` profile, etc.) are caught once inside the factory
+  and turned into a `PROVIDER_UNAVAILABLE` result on the first
+  `generatePatch` call, rather than the factory itself throwing at a
+  point the CLI would need a separate try/catch for. One error-handling
+  path for every kind of provider failure, not two.
+- **No test in `packages/generator` calls the real Anthropic API.**
+  `anthropicProvider.test.ts` only exercises `describeProviderError`'s
+  pure error-message mapping — constructing real
+  `Anthropic.AuthenticationError`/`RateLimitError` instances to test the
+  `instanceof` chain would mean guessing at SDK constructor shapes not
+  documented for this use case, and the alternative (an actual
+  unauthenticated network call) is exactly the kind of flaky,
+  credential-dependent test this project's "mock provider for tests"
+  requirement exists to avoid.
+- **The generator never writes to disk.** `generateDocumentationUpdates`
+  returns `ProposedPatch` values; nothing in this milestone applies one.
+  Patch application — with staleness detection (has the target content
+  changed since the patch was generated?) and explicit user approval —
+  is Milestone 8's validator, not this package's job.
+
 ## Trust boundaries (see brief §12)
 
 - The scanner never executes repository code or documentation content —
@@ -650,8 +714,48 @@ tests. Manually verified end-to-end against a real fixture repository
 documented method, run `tracedocs impact` — both correctly surfaced as
 `REVIEW` findings with the right evidence).
 
-**Not yet implemented:** generation and validation (Milestones 7–8) and
-GitHub integration (Milestone 9). Within graph scope specifically:
+**Milestone 7 (documentation patch generation) is implemented and tested:**
+
+- `@tracedocs/generator` — `DocumentationProvider` is the vendor-neutral
+  interface (`generatePatch(context) => Promise<GenerationResult>`);
+  nothing outside this package imports an LLM SDK directly.
+  `createMockProvider()` is deterministic and fully offline (three
+  configurable behaviors: propose/needsMoreInfo/unavailable), and is both
+  the CLI's default provider and what every test in the workspace runs
+  against. `createAnthropicProvider()` is the one real adapter (brief:
+  "one configurable provider adapter"), using `client.messages.parse()` +
+  a Zod schema for guaranteed-structured output, with a system prompt
+  that instructs the model to only describe behavior visible in the
+  provided code and to return `NEEDS_MORE_INFORMATION` rather than guess.
+  `buildGeneratorContext(finding, changeSet)` assembles a bounded context
+  per finding (current doc section text, before/after code for the one
+  changed symbol) — never the whole repository.
+  `generateDocumentationUpdates(findings, changeSet, provider)`
+  pre-filters to `REVIEW`-action `modified` findings before ever calling
+  the provider.
+- CLI: `tracedocs generate <path> --base <revision> [--provider
+  mock|anthropic]` prints each outcome (proposed patch with an
+  original/proposed diff, or the reason for `NEEDS_MORE_INFORMATION`/
+  `PROVIDER_UNAVAILABLE`) — never writes to disk.
+
+15 tests: the mock provider's four behaviors (including the
+codeAfter-unavailable → automatic `NEEDS_MORE_INFORMATION` case even in
+"propose" mode), context assembly against a real temporary git repo
+(before/after code extraction, section-text extraction, page-level
+fallback when there's no specific section, and the two `null`-return
+cases), the orchestrator's pre-filtering (skips `NEEDS_MORE_INFORMATION`
+findings, skips `removed`/`moved` findings, reports
+`PROVIDER_UNAVAILABLE` — never silently drops — when context can't be
+built) plus one real end-to-end run, and the Anthropic adapter's
+pure error-message mapping (no test calls the real API — see the
+Milestone 7 decisions above for why). Full workspace: 182 tests.
+Manually verified end-to-end against a real fixture repository with the
+mock provider (a documented, modified function correctly produced a
+`PROPOSED` patch) and the CLI's provider-name validation (an unknown
+`--provider` value fails clearly instead of silently falling back).
+
+**Not yet implemented:** validation and patch application (Milestone 8)
+and GitHub integration (Milestone 9). Within graph scope specifically:
 `TESTS`/`REFERENCES`/`CONFIGURES`/`EXPOSES`/`LINKS_TO` edge types and
 `api_endpoint`/`configuration_item`/`test`/`code_example` node types exist
 in the brief's model but nothing populates them yet — see the

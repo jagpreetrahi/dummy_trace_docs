@@ -13,6 +13,7 @@
   },
   "dependencies": {
     "@tracedocs/change-analyzer": "workspace:*",
+    "@tracedocs/generator": "workspace:*",
     "@tracedocs/graph": "workspace:*",
     "@tracedocs/impact-analyzer": "workspace:*",
     "@tracedocs/indexer": "workspace:*",

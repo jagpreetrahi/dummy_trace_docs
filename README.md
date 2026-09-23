@@ -6,16 +6,19 @@ change may have made documentation stale, and proposes reviewable,
 evidence-backed fixes. It never auto-merges generated documentation.
 
 See [`docs/architecture.md`](docs/architecture.md) for the system design and
-current implementation status.
+current implementation status, and
+[`docs/lessons-learned.md`](docs/lessons-learned.md) for real bugs found
+along the way (and how), plus the key decisions behind the current design.
 
 ## Status
 
 Early, incremental build. **Implemented so far: Milestone 1 (repository
 scanning), Milestone 2 (JS/TS + Markdown parsing), Milestone 3 (the
 persistent dependency graph), Milestone 4 (an HTTP API and a React graph
-explorer over it), Milestone 5 (git change analysis), and Milestone 6
-(documentation impact analysis).** Generation, validation, and GitHub
-integration are not built yet.
+explorer over it), Milestone 5 (git change analysis), Milestone 6
+(documentation impact analysis), and Milestone 7 (documentation patch
+generation).** Validation/patch application and GitHub integration are
+not built yet.
 
 ## Requirements
 
@@ -102,6 +105,23 @@ symbols, index the repository once at `--base` before making changes (see
 `docs/architecture.md` for why); findings for modified symbols don't
 depend on this.
 
+### Generating a proposed documentation patch
+
+```sh
+node packages/cli/dist/index.js generate <path-to-repo> --base <revision> [--provider mock|anthropic]
+```
+
+Runs impact analysis, then attempts to generate a concrete patch for each
+`REVIEW`-level finding on a *modified* symbol (deleted/moved symbols and
+findings already downgraded to `NEEDS_MORE_INFORMATION` are skipped — see
+`docs/architecture.md`). Defaults to a fully offline mock provider, so
+this works with no API key and no network access; pass `--provider
+anthropic` for real generation, which needs an Anthropic API key
+available the way the SDK normally resolves one (`ANTHROPIC_API_KEY`, or
+`ant auth login`). Every outcome is printed, including
+`NEEDS_MORE_INFORMATION` and `PROVIDER_UNAVAILABLE` ones — nothing is
+silently skipped. Never writes to disk; that's Milestone 8.
+
 ## Development
 
 ```sh
@@ -125,7 +145,7 @@ pnpm run typecheck # builds project references and reports type errors
 | `@tracedocs/web` | React/Vite/Cytoscape.js graph explorer |
 | `@tracedocs/change-analyzer` | Git-revision comparison and symbol-level change detection |
 | `@tracedocs/impact-analyzer` | Graph-based documentation impact findings for a change set |
+| `@tracedocs/generator` | LLM provider abstraction + patch generation (mock + Anthropic adapters) |
 | `@tracedocs/cli` | `tracedocs` command line entry point |
 
-More packages (`generator`, `validator`) are added as their milestones
-land.
+More packages (`validator`) are added as their milestones land.
