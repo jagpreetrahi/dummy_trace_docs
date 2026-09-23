@@ -3,5 +3,6 @@ dist/
 build/
 coverage/
 *.log
+*.tsbuildinfo
 .tracedocs/
 .DS_Store

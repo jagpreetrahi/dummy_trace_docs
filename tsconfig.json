@@ -3,6 +3,8 @@
   "references": [
     { "path": "packages/core" },
     { "path": "packages/scanner" },
+    { "path": "packages/parser-ts" },
+    { "path": "packages/parser-md" },
     { "path": "packages/cli" }
   ]
 }

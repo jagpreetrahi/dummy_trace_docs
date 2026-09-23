@@ -10,9 +10,11 @@ current implementation status.
 
 ## Status
 
-Early, incremental build. **Implemented so far: Milestone 1 — repository
-scanning.** Parsing, the dependency graph, change/impact analysis,
-generation, validation, the UI, and GitHub integration are not built yet.
+Early, incremental build. **Implemented so far: Milestone 1 (repository
+scanning) and Milestone 2 (JS/TS + Markdown parsing).** The persistent
+dependency graph, change/impact analysis, generation, validation, the UI,
+and GitHub integration are not built yet — parsers currently run per-file
+in isolation and aren't wired into the CLI's `index` command.
 
 ## Requirements
 
@@ -57,8 +59,9 @@ pnpm run typecheck # builds project references and reports type errors
 |---|---|
 | `@tracedocs/core` | Shared types |
 | `@tracedocs/scanner` | Repository discovery, git revision, content hashing |
+| `@tracedocs/parser-ts` | JS/TS symbol, import/export, call, and JSDoc extraction |
+| `@tracedocs/parser-md` | Markdown heading/section/link/annotation extraction |
 | `@tracedocs/cli` | `tracedocs` command line entry point |
 
-More packages (`parser-ts`, `parser-md`, `graph`, `change-analyzer`,
-`impact-analyzer`, `generator`, `validator`, `server`, `web`) are added as
-their milestones land.
+More packages (`graph`, `change-analyzer`, `impact-analyzer`, `generator`,
+`validator`, `server`, `web`) are added as their milestones land.

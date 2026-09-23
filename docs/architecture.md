@@ -16,8 +16,8 @@ testable and swappable:
 packages/
 ├── core/            shared types (no runtime dependencies)
 ├── scanner/          repository discovery, git revision, hashing (Milestone 1 — done)
-├── parser-ts/        JS/TS symbol extraction (Milestone 2)
-├── parser-md/        Markdown section/annotation extraction (Milestone 2)
+├── parser-ts/        JS/TS symbol extraction (Milestone 2 — done)
+├── parser-md/        Markdown section/annotation extraction (Milestone 2 — done)
 ├── graph/            SQLite-backed dependency graph + migrations (Milestone 3)
 ├── change-analyzer/  git diff -> structured change set (Milestone 5)
 ├── impact-analyzer/  graph-based documentation impact rules (Milestone 6)
@@ -71,6 +71,50 @@ receives a bounded context object, not the whole repository.
   calls for readable async APIs; it shells out to the system `git` binary
   under the hood, same as the raw approach would.
 
+## Key decisions made in Milestone 2
+
+- **TypeScript Compiler API instead of tree-sitter for JS/TS.** The brief
+  suggests tree-sitter; `parser-ts` uses `typescript`'s own parser instead.
+  Reasons: (1) tree-sitter's Node bindings are native modules requiring
+  `node-gyp`/a C toolchain — a real risk flagged in Milestone 0, especially
+  on Windows; the TS Compiler API is pure JS/TS with no native build step;
+  (2) it's the same parser `tsc` itself uses, so JSDoc, export semantics,
+  and modifier flags (`export`, `default`, `static`) are read authoritatively
+  rather than re-derived from generic syntax nodes. The tradeoff: `parser-ts`
+  is JS/TS-specific and cannot be reused for Python/Go. Tree-sitter (or
+  another dedicated parser) remains the right choice for those, added later
+  behind the same `ParsedSourceFile` shape so the graph builder doesn't care
+  which parser produced it.
+- **Syntactic parsing only, no type checker.** `parseTypeScriptFile` uses
+  `ts.createSourceFile` directly rather than building a full `ts.Program`.
+  A type checker would let us resolve `import`s and calls to their actual
+  declarations, but requires a valid, resolvable `tsconfig.json` for every
+  scanned repo and is much slower per file. Cross-file resolution (turning
+  raw import specifiers and callee text into real edges) is deferred to the
+  graph builder in Milestone 3, which can do it once, project-wide, instead
+  of per-file.
+- **JSDoc via public APIs only.** `ts.getLeadingCommentRanges` + manual
+  `@tag` parsing, instead of the commonly-used but internal `node.jsDoc`
+  property, so this doesn't break on a future TypeScript upgrade.
+- **Calls are recorded as text, not resolved symbols.** A call's `calleeName`
+  is the literal source text of the callee expression (e.g. `authService.refresh`),
+  restricted to identifier / `this` / property-access chains — dynamic
+  callees (`arr[i]()`, optional chaining, IIFEs) are skipped rather than
+  guessed at. Resolving `calleeName` text to an actual symbol id is a graph
+  builder concern (Milestone 3), since it requires knowing what a name
+  resolves to across imports.
+- **Markdown sections are non-overlapping and flat.** Each heading (at any
+  depth) owns a contiguous span up to the *next* heading of any depth —
+  a `##` subsection is its own section, not nested inside its parent `#`'s
+  range. This avoids ambiguity about which section "owns" content when a
+  document is later patched, at the cost of not modeling heading hierarchy
+  explicitly (a section's parent heading can still be recovered later from
+  `depth` if needed).
+- **Annotation validation is syntax-only for now.** `<!-- tracedocs:documents
+  <target> -->` is checked for a known directive and a non-empty target;
+  whether `target` actually resolves to a real symbol requires the graph
+  and is deferred to Milestone 3/6.
+
 ## Trust boundaries (see brief §12)
 
 - The scanner never executes repository code or documentation content —
@@ -107,6 +151,39 @@ handling, always-excluded directories, revision detection (including the
 no-commits-yet case), and manifest diffing across two scans using real
 temporary git repositories.
 
-**Not yet implemented:** everything from Milestone 2 onward (parsing,
-graph, change analysis, impact analysis, generation, validation, UI, GitHub
-Action). See the milestone list in the project brief for sequencing.
+**Milestone 2 (parsing) is implemented and tested:**
+
+- `@tracedocs/parser-ts` — `parseTypeScriptFile(repoRelativePath, sourceText)`
+  extracts: functions (declarations and `const`/`let` arrow/function-expression
+  assignments), classes, methods (including constructors, getters/setters,
+  and arrow-function class fields), exported symbols (inline `export`
+  modifiers, named/`*`/namespace re-exports, `export default`), imports
+  (default/named/namespace, aliasing, type-only), statically identifiable
+  calls (attributed to their enclosing function/method, or `null` for
+  module-level), JSDoc (description + `@tag`s), and source locations.
+  Unsupported syntax (computed method names, destructured exports,
+  `export =`) is reported in `unsupportedConstructs`, never silently
+  dropped or guessed at.
+- `@tracedocs/parser-md` — `parseMarkdownDocument(repoRelativePath, sourceText)`
+  extracts headings (with GitHub-compatible anchor slugs, including
+  duplicate disambiguation), non-overlapping sections with raw content and
+  source ranges, links (classified internal vs. external), fenced code
+  blocks with language, a heuristic classification of inline code spans as
+  symbol-like or file-path-like, and explicit `tracedocs:` annotations with
+  syntactic well-formedness checks.
+- Both parsers are purely syntactic and read-only: no type checker, no
+  cross-file resolution, no network access — they take a string and a path
+  and return structured evidence.
+
+31 tests across both packages (functions, classes/methods, imports/exports,
+calls including the anonymous-callback and dynamic-callee cases,
+headings/sections, links/fences, symbol references, annotations).
+
+**Not yet implemented:** everything from Milestone 3 onward (the persistent
+dependency graph, change analysis, impact analysis, generation, validation,
+UI, GitHub Action). Not yet handled even within parsing scope: routes and
+configuration-declaration extraction (spec section C mentions these, but
+they require framework-specific pattern matching and aren't in Milestone
+2's task list); interfaces, type aliases, and enums are not extracted as
+symbols since they aren't runtime code the graph needs to track relationships
+for. See the milestone list in the project brief for sequencing.
