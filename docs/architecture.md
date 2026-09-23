@@ -21,7 +21,7 @@ packages/
 ├── graph/            SQLite-backed dependency graph + migrations (Milestone 3 — done)
 ├── indexer/          wires scanner+parsers+graph into indexRepository() (Milestone 3 — done)
 ├── change-analyzer/  git diff -> structured change set (Milestone 5 — done)
-├── impact-analyzer/  graph-based documentation impact rules (Milestone 6)
+├── impact-analyzer/  graph-based documentation impact rules (Milestone 6 — done)
 ├── generator/        LLM provider abstraction + patch generation (Milestone 7)
 ├── validator/         Markdown/patch validation (Milestone 8)
 ├── cli/              `tracedocs` command line entry point
@@ -341,6 +341,91 @@ receives a bounded context object, not the whole repository.
   Rule #3 ("separate parsing, graph logic, change analysis, impact
   analysis, and generation") means in practice here.
 
+## Key decisions made in Milestone 6
+
+- **`analyzeImpact` is a pure function of `(ChangeSet, GraphStore,
+  repositoryId, DanglingReference[])`** — no dependency on
+  `change-analyzer` or `indexer` themselves, only on the *data* they
+  produce (from `@tracedocs/core` and `@tracedocs/graph`). This keeps the
+  package trivially testable (seed a `GraphStore` directly, construct a
+  `ChangeSet` literal — no git repos, no filesystem, tests run in
+  milliseconds) and matches Rule #3's separation the same way
+  `change-analyzer` does.
+- **Real bug found and fixed while wiring the CLI's `impact` command
+  end-to-end, not by unit tests alone**: a `modified` symbol that kept its
+  exact identity (same stable id — only its body changed) was still
+  losing its `DOCUMENTS` edge, because `indexRepository`'s
+  delete-and-reinsert strategy (Milestone 3) wipes *all* of a changed
+  file's edges before reinserting, and nothing re-created the edge unless
+  the *documentation* file was also reprocessed in that same run — which
+  it wasn't, since only the code file had actually changed. Manually
+  running `tracedocs impact` against a real fixture surfaced this
+  immediately (the modified, documented function produced zero findings).
+  Fixed at the source: `GraphStore.findDocumentationFilesReferencing`
+  finds which doc files currently reference a given code file, and
+  `indexRepository` now expands its per-run file set to include those doc
+  files whenever the code they reference is about to be reprocessed —
+  so their annotations get correctly re-resolved against the fresh nodes
+  instead of just losing the edge. Covered by a regression test
+  (`indexer/test/markdownAndAnnotations.test.ts`) and a new direct test of
+  the `GraphStore` method itself, not just left as a fixed-and-forgotten
+  manual finding.
+- **Bounded traversal for `modified` symbols walks CONTAINS (incoming)
+  and DOCUMENTS (outgoing) only — never CALLS.** The brief's own worked
+  example (`refreshAccessToken() → AuthenticationService →
+  docs/authentication.md`) is exactly a containment relationship: a
+  change to a method is relevant to documentation about its class or file.
+  "Things this function calls might be documented somewhere" is a
+  meaningfully weaker, noisier signal — a modified leaf utility function
+  could easily be called by a dozen unrelated things — and was left out to
+  avoid exactly the false-positive noise the brief warns against
+  (§F: "avoid creating a documentation update merely to demonstrate AI
+  functionality"). Revisit only with real evidence it's worth the noise.
+- **Certainty is assigned purely by graph distance: HIGH at depth 0
+  (the changed symbol itself is documented), MEDIUM at depth 1 (its
+  direct container is), LOW at depth 2 (two containment hops up,
+  typically the file).** Documented here per the brief's explicit
+  requirement (§F) to say how these labels are assigned, and deliberately
+  not framed as calibrated probabilities — nothing has been evaluated
+  against labeled data to justify a number.
+- **`removed`/`moved` symbols only ever get depth-0-equivalent findings,
+  never bounded traversal.** Once a symbol is deleted, its old graph
+  node — and everything that would let a "class"/"file" containment walk
+  happen — is gone with it; only the specific dangling `DOCUMENTS` edge
+  captured at the moment of deletion survives as evidence. A future
+  improvement could look up whether the symbol's *former* container still
+  exists and is separately documented, but that requires carrying
+  additional context this milestone doesn't currently thread through
+  (documented as a known gap, not attempted here).
+- **A finding is downgraded from `REVIEW` to `NEEDS_MORE_INFORMATION`
+  when the affected doc file was also changed in the same diff.** This is
+  a deliberate, if blunt, way to reduce false-alarm noise per the brief's
+  "avoid needlessly flagging" principle: if the author already touched
+  that doc file, a confident "please review, this might be stale" could
+  just be wrong (they may have already fixed it) — but silently dropping
+  the finding would also be wrong (they may not have addressed *this
+  specific* relationship). `NEEDS_MORE_INFORMATION` is the honest middle
+  ground: something changed on both sides, verify it's actually resolved.
+- **`PROPOSE_UPDATE` is never assigned by anything in Milestone 6.** It's
+  part of the `ImpactAction` type (matching the brief's four-value list)
+  but reserved until the generator (Milestone 7) exists to actually
+  accompany a finding with a concrete patch — assigning it now, with
+  nothing to propose, would violate Rule #17 ("do not claim a feature
+  works until it has been implemented and tested").
+- **`analyzeImpact` requires the caller to index the graph as part of the
+  same base→target transition the `ChangeSet` describes** (documented as
+  an explicit precondition in the function's own doc comment, not just
+  here) — `modified`-symbol findings are looked up fresh against whatever
+  the current graph is and don't depend on this, but `removed`/`moved`
+  findings depend entirely on `danglingReferences` from that specific
+  indexing call. The CLI's `impact` command reflects this constraint
+  directly: it only ever compares `--base` against the current working
+  tree (never an arbitrary `--target`), because `indexRepository` can only
+  ever index what's actually on disk — there is no way to make the graph
+  reflect an arbitrary historical revision without checking it out, and
+  auto-checkout as a side effect of an "analyze" command would be an
+  unacceptable mutation of the user's working directory.
+
 ## Trust boundaries (see brief §12)
 
 - The scanner never executes repository code or documentation content —
@@ -520,8 +605,53 @@ moving verbatim between files, and two negative cases pinning down that
 neither a matching name alone nor matching content alone is sufficient
 evidence for "moved." Full workspace: 147 tests.
 
-**Not yet implemented:** impact analysis, generation, validation, and
-GitHub integration. Within graph scope specifically:
+**Milestone 6 (documentation impact analysis) is implemented and tested:**
+
+- `@tracedocs/impact-analyzer` — `analyzeImpact(changeSet, store,
+  repositoryId, danglingReferences, options?)` produces `ImpactFinding[]`
+  using only graph-based retrieval and deterministic rules (brief §F: no
+  LLM involved at all yet — that's the explicit requirement for this
+  milestone, not a gap). For each `modified` symbol still in the graph:
+  bounded traversal (`traverseForDocs`, default `maxDepth: 2`) walks
+  outward via incoming `CONTAINS` edges (symbol → class → file),
+  checking for an outgoing `DOCUMENTS` edge at every step, and returns
+  the *actual* graph path walked — never a fabricated one. For `removed`/
+  `moved` symbols (whose graph node no longer exists in the target state):
+  matched against `DanglingReference`s captured by the indexer at the
+  moment their node was deleted. Certainty (`HIGH`/`MEDIUM`/`LOW`) is
+  assigned purely by graph distance; action (`REVIEW`/
+  `NEEDS_MORE_INFORMATION`; never a fabricated `NO_ACTION` finding since
+  "no relationship found" is correctly just... no finding) additionally
+  checks whether the affected doc file was itself also touched in the
+  same diff. `PROPOSE_UPDATE` exists in the type but is never assigned —
+  reserved for Milestone 7.
+- **A real bug was found and fixed in the process**, not just anticipated:
+  manually running the new CLI command against a real fixture (not a unit
+  test) revealed that a modified-but-identity-preserved documented
+  function produced zero findings, because Milestone 3's indexer was
+  silently dropping its `DOCUMENTS` edge on reindex whenever only the code
+  file (not the doc file) had changed. Fixed in `packages/graph` and
+  `packages/indexer` — see the Milestone 6 decisions above for the full
+  story and the regression tests added for it.
+- CLI: `tracedocs impact <path> --base <revision>` (target is always the
+  current working tree — see the decisions above for why an arbitrary
+  `--target` isn't supported here).
+
+16 tests in `impact-analyzer` (direct depth-0 relationships, indirect
+depth-1/depth-2 relationships, the `maxDepth` bound, no-relationship →
+no findings, removed/moved symbols via dangling references, ignoring
+non-DOCUMENTS dangling references, the doc-also-changed downgrade to
+`NEEDS_MORE_INFORMATION`, and deduplication of one relationship reached
+via two paths vs. two genuinely distinct changed symbols sharing one
+documented container) plus 4 new tests covering the indexer fix (1
+regression test, 3 for the new `GraphStore` method). Full workspace: 167
+tests. Manually verified end-to-end against a real fixture repository
+(index at base, modify a documented function's parameters, delete a
+documented method, run `tracedocs impact` — both correctly surfaced as
+`REVIEW` findings with the right evidence).
+
+**Not yet implemented:** generation and validation (Milestones 7–8) and
+GitHub integration (Milestone 9). Within graph scope specifically:
 `TESTS`/`REFERENCES`/`CONFIGURES`/`EXPOSES`/`LINKS_TO` edge types and
 `api_endpoint`/`configuration_item`/`test`/`code_example` node types exist
 in the brief's model but nothing populates them yet — see the
@@ -529,5 +659,13 @@ in the brief's model but nothing populates them yet — see the
 for exactly what's live. Within change-analysis scope: no dedicated
 export-list diffing beyond what symbol-level diffing already surfaces (see
 Milestone 5 decisions above), and route/configuration-declaration changes
-aren't detected since those aren't extracted as symbols at all yet. See
-the milestone list in the project brief for sequencing.
+aren't detected since those aren't extracted as symbols at all yet. Within
+impact-analysis scope specifically: no semantic/lexical retrieval and no
+LLM-assisted relevance assessment (brief §F explicitly defers both until
+after this deterministic baseline — which now exists and is tested); no
+use of `unresolvedAnnotations` as impact-analysis input (that's a data-
+quality signal surfaced separately by `tracedocs index`, not folded into
+"what does this specific change affect"); and `removed`/`moved` findings
+don't attempt bounded traversal from the symbol's former container (see
+decisions above). See the milestone list in the project brief for
+sequencing.

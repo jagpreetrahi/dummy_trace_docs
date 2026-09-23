@@ -29,6 +29,7 @@ describe('move detection', () => {
         changeType: 'moved',
         name: 'helper',
         previousFilePath: 'src/a.ts',
+        previousSymbolId: 'src/a.ts#helper:function',
         filePath: 'src/b.ts',
       }),
     ]);

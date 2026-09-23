@@ -13,9 +13,9 @@ current implementation status.
 Early, incremental build. **Implemented so far: Milestone 1 (repository
 scanning), Milestone 2 (JS/TS + Markdown parsing), Milestone 3 (the
 persistent dependency graph), Milestone 4 (an HTTP API and a React graph
-explorer over it), and Milestone 5 (git change analysis).** Impact
-analysis, generation, validation, and GitHub integration are not built
-yet.
+explorer over it), Milestone 5 (git change analysis), and Milestone 6
+(documentation impact analysis).** Generation, validation, and GitHub
+integration are not built yet.
 
 ## Requirements
 
@@ -85,6 +85,23 @@ different file. Renames and moves are only reliably detected when the
 relevant side is committed (or staged) — see `docs/architecture.md` for
 why an uncommitted rename can't be told apart from an unrelated delete+add.
 
+### Finding documentation that might be affected by a change
+
+```sh
+node packages/cli/dist/index.js impact <path-to-repo> --base <revision>
+```
+
+Compares `--base` against the current working tree and reports
+documentation that may need a look — a doc that explicitly annotates a
+symbol that was modified, or a doc pointing at a symbol that was deleted
+or moved elsewhere, with the graph relationship and reasoning behind each
+finding. Uses only graph-based rules (no AI involved yet) and stays silent
+for anything with no discoverable relationship, rather than flagging
+everything a file touched. For the most reliable results on deleted/moved
+symbols, index the repository once at `--base` before making changes (see
+`docs/architecture.md` for why); findings for modified symbols don't
+depend on this.
+
 ## Development
 
 ```sh
@@ -107,7 +124,8 @@ pnpm run typecheck # builds project references and reports type errors
 | `@tracedocs/server` | Fastify HTTP API over the graph |
 | `@tracedocs/web` | React/Vite/Cytoscape.js graph explorer |
 | `@tracedocs/change-analyzer` | Git-revision comparison and symbol-level change detection |
+| `@tracedocs/impact-analyzer` | Graph-based documentation impact findings for a change set |
 | `@tracedocs/cli` | `tracedocs` command line entry point |
 
-More packages (`impact-analyzer`, `generator`, `validator`) are added as
-their milestones land.
+More packages (`generator`, `validator`) are added as their milestones
+land.

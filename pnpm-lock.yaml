@@ -63,6 +63,9 @@ importers:
       '@tracedocs/graph':
         specifier: workspace:*
         version: link:../graph
+      '@tracedocs/impact-analyzer':
+        specifier: workspace:*
+        version: link:../impact-analyzer
       '@tracedocs/indexer':
         specifier: workspace:*
         version: link:../indexer
@@ -88,6 +91,19 @@ importers:
       '@tracedocs/core':
         specifier: workspace:*
         version: link:../core
+    devDependencies:
+      vitest:
+        specifier: ^3.2.4
+        version: 3.2.7(@types/debug@4.1.13)(@types/node@22.20.4)(tsx@4.23.15)
+
+  packages/impact-analyzer:
+    dependencies:
+      '@tracedocs/core':
+        specifier: workspace:*
+        version: link:../core
+      '@tracedocs/graph':
+        specifier: workspace:*
+        version: link:../graph
     devDependencies:
       vitest:
         specifier: ^3.2.4

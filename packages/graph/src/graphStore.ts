@@ -202,6 +202,29 @@ export class GraphStore {
     return rows.map((row) => mapNodeRow(row as never));
   }
 
+  /**
+   * File paths of documentation with a DOCUMENTS edge from some node whose
+   * `file_path` is `filePath` — i.e. "which docs currently reference
+   * something in this file." The indexer uses this before reprocessing a
+   * changed code file: that file's nodes are about to be deleted and
+   * reinserted (even a node whose identity doesn't change loses its edges
+   * in that process), so any doc that annotated it needs to be
+   * reprocessed too, or its DOCUMENTS edge would just be lost rather than
+   * correctly re-resolved against the fresh node.
+   */
+  findDocumentationFilesReferencing(repositoryId: number, filePath: string): string[] {
+    const rows = this.db
+      .prepare(
+        `SELECT DISTINCT tn.file_path AS file_path
+         FROM edges e
+         JOIN nodes sn ON sn.id = e.source_node_id
+         JOIN nodes tn ON tn.id = e.target_node_id
+         WHERE e.repository_id = ? AND e.type = 'DOCUMENTS' AND sn.file_path = ?`,
+      )
+      .all(repositoryId, filePath) as { file_path: string | null }[];
+    return rows.map((row) => row.file_path).filter((path): path is string => path != null);
+  }
+
   listNodesByType(repositoryId: number, type: GraphNodeType): GraphNode[] {
     const rows = this.db
       .prepare('SELECT * FROM nodes WHERE repository_id = ? AND type = ?')

@@ -6,10 +6,5 @@
     "composite": true
   },
   "include": ["src"],
-  "references": [
-    { "path": "../graph" },
-    { "path": "../indexer" },
-    { "path": "../change-analyzer" },
-    { "path": "../impact-analyzer" }
-  ]
+  "references": [{ "path": "../core" }, { "path": "../graph" }]
 }

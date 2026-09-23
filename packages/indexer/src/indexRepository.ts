@@ -50,7 +50,24 @@ export async function indexRepository(repoRoot: string, store: GraphStore): Prom
     store.deleteFile(repositoryId, path);
   }
 
-  const filesToProcess = [...changes.added, ...changes.modified];
+  const changedCodeFiles = [...changes.added, ...changes.modified];
+
+  // A changed code file's nodes are about to be deleted and reinserted —
+  // even a symbol whose identity (stable id) doesn't change loses its
+  // edges in that process. Any doc that currently has a DOCUMENTS edge
+  // into this file needs to be reprocessed too, or that relationship
+  // would just be silently dropped instead of correctly re-resolved
+  // against the fresh node. Computed now, before anything is deleted.
+  const affectedDocFiles = new Set<string>();
+  for (const path of changedCodeFiles) {
+    for (const docPath of store.findDocumentationFilesReferencing(repositoryId, path)) {
+      if (!changedCodeFiles.includes(docPath) && !changes.removed.includes(docPath)) {
+        affectedDocFiles.add(docPath);
+      }
+    }
+  }
+
+  const filesToProcess = [...changedCodeFiles, ...affectedDocFiles];
   const knownFilePaths = new Set(scan.files.map((f) => f.repoRelativePath));
 
   const parsedCodeByPath = new Map<string, ParsedSourceFile>();

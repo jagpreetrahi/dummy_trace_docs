@@ -35,6 +35,15 @@ export interface SymbolChange {
   filePath: string;
   /** Present only for `moved`: the file this symbol used to live in. */
   previousFilePath?: string;
+  /**
+   * Present only for `moved`: the stable id it had before moving. Needed
+   * because `symbolId` is the *new* id for a move — a consumer that wants
+   * to look up what used to reference this symbol at its old location
+   * (e.g. the impact analyzer, against dangling graph edges) needs the
+   * old id specifically, not a `${previousFilePath}#...` string it would
+   * otherwise have to reconstruct itself.
+   */
+  previousSymbolId?: string;
   /** Best-available location — absent only if the symbol no longer exists anywhere (removed). */
   location?: SourceLocation;
   description: string;

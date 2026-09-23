@@ -72,6 +72,32 @@ describe('indexing markdown files', () => {
     expect(result.unresolvedAnnotations).toHaveLength(1);
   });
 
+  it('keeps the DOCUMENTS edge when the documented code changes but the doc file does not', async () => {
+    // Regression test: re-indexing a changed code file deletes and
+    // reinserts its nodes, including one whose stable id doesn't change —
+    // that must not silently drop the DOCUMENTS edge pointing at it just
+    // because the annotating doc file itself wasn't touched this run.
+    await repo.writeFile('src/token.ts', 'export function refreshAccessToken() { return 1; }');
+    await repo.writeFile(
+      'docs/authentication.md',
+      '# Authentication\n\n## Refresh tokens\n\n<!-- tracedocs:documents src/token.ts#refreshAccessToken -->\nDetails here.\n',
+    );
+    const first = await indexRepository(repo.root, store);
+    const codeNodeBefore = store.getNodeByStableId(first.repositoryId, 'src/token.ts#refreshAccessToken:function');
+    expect(store.listOutgoingEdges(codeNodeBefore!.id, 'DOCUMENTS')).toHaveLength(1);
+
+    // Change only the function's body — same file path, same qualified name,
+    // same stable id — and leave the doc file completely untouched.
+    await repo.writeFile(
+      'src/token.ts',
+      'export function refreshAccessToken(force: boolean) { return force ? 1 : 2; }',
+    );
+    const second = await indexRepository(repo.root, store);
+
+    const codeNodeAfter = store.getNodeByStableId(second.repositoryId, 'src/token.ts#refreshAccessToken:function');
+    expect(store.listOutgoingEdges(codeNodeAfter!.id, 'DOCUMENTS')).toHaveLength(1);
+  });
+
   it('attributes an annotation before any heading to the page node', async () => {
     await repo.writeFile('src/a.ts', 'export function foo() {}');
     await repo.writeFile('docs/a.md', '<!-- tracedocs:documents src/a.ts#foo -->\n\n# Title\n');

@@ -141,3 +141,61 @@ describe('countFiles', () => {
     store.close();
   });
 });
+
+describe('findDocumentationFilesReferencing', () => {
+  it('finds a doc file with a DOCUMENTS edge from a node in the given file', () => {
+    const store = GraphStore.open(':memory:');
+    const repoId = store.upsertRepository('/repo');
+    store.upsertNode(repoId, { stableId: 'code', type: 'function', name: 'foo', filePath: 'src/a.ts' });
+    store.upsertNode(repoId, {
+      stableId: 'doc',
+      type: 'documentation_section',
+      name: 'Foo',
+      filePath: 'docs/a.md',
+    });
+    store.upsertEdge(repoId, {
+      sourceStableId: 'code',
+      targetStableId: 'doc',
+      type: 'DOCUMENTS',
+      evidenceType: 'explicit_annotation',
+      certainty: 'HIGH',
+    });
+
+    expect(store.findDocumentationFilesReferencing(repoId, 'src/a.ts')).toEqual(['docs/a.md']);
+    store.close();
+  });
+
+  it('returns an empty list when nothing documents the file', () => {
+    const store = GraphStore.open(':memory:');
+    const repoId = store.upsertRepository('/repo');
+    store.upsertNode(repoId, { stableId: 'code', type: 'function', name: 'foo', filePath: 'src/a.ts' });
+
+    expect(store.findDocumentationFilesReferencing(repoId, 'src/a.ts')).toEqual([]);
+    store.close();
+  });
+
+  it('deduplicates when multiple symbols in the file are documented by the same doc file', () => {
+    const store = GraphStore.open(':memory:');
+    const repoId = store.upsertRepository('/repo');
+    store.upsertNode(repoId, { stableId: 'code1', type: 'function', name: 'foo', filePath: 'src/a.ts' });
+    store.upsertNode(repoId, { stableId: 'code2', type: 'function', name: 'bar', filePath: 'src/a.ts' });
+    store.upsertNode(repoId, {
+      stableId: 'doc',
+      type: 'documentation_page',
+      name: 'a.md',
+      filePath: 'docs/a.md',
+    });
+    for (const source of ['code1', 'code2']) {
+      store.upsertEdge(repoId, {
+        sourceStableId: source,
+        targetStableId: 'doc',
+        type: 'DOCUMENTS',
+        evidenceType: 'explicit_annotation',
+        certainty: 'HIGH',
+      });
+    }
+
+    expect(store.findDocumentationFilesReferencing(repoId, 'src/a.ts')).toEqual(['docs/a.md']);
+    store.close();
+  });
+});

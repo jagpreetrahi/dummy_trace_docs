@@ -4,6 +4,7 @@ import { join, resolve } from 'node:path';
 import { analyzeChanges } from '@tracedocs/change-analyzer';
 import { GraphStore } from '@tracedocs/graph';
 import { indexRepository } from '@tracedocs/indexer';
+import { analyzeImpact } from '@tracedocs/impact-analyzer';
 import { Command } from 'commander';
 
 const program = new Command();
@@ -107,6 +108,50 @@ program
       for (const symbol of result.symbolChanges) {
         console.log(`  [${symbol.changeType}] ${symbol.description}`);
       }
+    }
+  });
+
+program
+  .command('impact')
+  .description(
+    'Show which documentation may be affected by changes since --base, compared to the current working tree. ' +
+      'Indexes the repository as part of this command (transitioning the graph to the working tree state) — ' +
+      'findings for deleted/moved symbols are most reliable when the repository was already indexed at --base ' +
+      'beforehand, since that is what lets this command see what used to document them.',
+  )
+  .argument('[path]', 'repository path', '.')
+  .requiredOption('--base <revision>', 'base revision to compare from')
+  .action(async (pathArg: string, options: { base: string }) => {
+    const repoRoot = resolve(pathArg);
+    const changeSet = await analyzeChanges(repoRoot, options.base);
+    const store = await openGraphStore(repoRoot);
+
+    try {
+      const indexResult = await indexRepository(repoRoot, store);
+      const findings = analyzeImpact(changeSet, store, indexResult.repositoryId, indexResult.danglingReferences);
+
+      console.log(`Repository: ${repoRoot}`);
+      console.log(`Base:       ${changeSet.baseRevision}`);
+      console.log(`Target:     (working tree)`);
+
+      if (findings.length === 0) {
+        console.log('No documentation impact found.');
+        return;
+      }
+
+      console.log(`Documentation impact findings: ${findings.length}`);
+      for (const finding of findings) {
+        const location = finding.sectionHeading ?? '(whole page)';
+        console.log(`\n[${finding.action}] ${finding.documentPath} — ${location}`);
+        console.log(`  Certainty: ${finding.certainty}`);
+        console.log(`  Related:   ${finding.relatedSymbolName} (${finding.relatedChangeType})`);
+        console.log(`  Why:       ${finding.explanation}`);
+        if (finding.graphPath.length > 0) {
+          console.log(`  Path:      ${finding.graphPath.map((s) => s.nodeName).join(' -> ')}`);
+        }
+      }
+    } finally {
+      store.close();
     }
   });
 

@@ -48,6 +48,7 @@ export function detectMoves(
       kind: target.symbol.kind,
       filePath: target.filePath,
       previousFilePath: removedSymbol.filePath,
+      previousSymbolId: removedSymbol.symbol.id,
       location: target.symbol.location,
       description: `${describeKind(target.symbol.kind)} \`${target.symbol.qualifiedName}\` moved from ${removedSymbol.filePath} to ${target.filePath}`,
       evidence: 'Identical source text was removed from one file and added, unchanged, to another.',
