@@ -17,6 +17,23 @@ export interface DanglingReference {
   edgeType: GraphEdgeType;
 }
 
+export interface RepositorySummary {
+  id: number;
+  repositoryRoot: string;
+  currentRevision: string | null;
+  indexedAt: string | null;
+}
+
+export interface ListNodesOptions {
+  types?: GraphNodeType[];
+  limit?: number;
+}
+
+export interface ListEdgesOptions {
+  types?: GraphEdgeType[];
+  limit?: number;
+}
+
 /**
  * The typed, single entry point for all graph persistence and queries.
  * Deliberately not a general query language — every method here exists
@@ -55,6 +72,33 @@ export class GraphStore {
       .run(revision, indexedAt, repositoryId);
   }
 
+  listRepositories(): RepositorySummary[] {
+    const rows = this.db
+      .prepare('SELECT id, repository_root, current_revision, indexed_at FROM repositories ORDER BY id')
+      .all() as { id: number; repository_root: string; current_revision: string | null; indexed_at: string | null }[];
+    return rows.map((row) => ({
+      id: row.id,
+      repositoryRoot: row.repository_root,
+      currentRevision: row.current_revision,
+      indexedAt: row.indexed_at,
+    }));
+  }
+
+  getRepository(repositoryId: number): RepositorySummary | undefined {
+    const row = this.db
+      .prepare('SELECT id, repository_root, current_revision, indexed_at FROM repositories WHERE id = ?')
+      .get(repositoryId) as
+      | { id: number; repository_root: string; current_revision: string | null; indexed_at: string | null }
+      | undefined;
+    if (!row) return undefined;
+    return {
+      id: row.id,
+      repositoryRoot: row.repository_root,
+      currentRevision: row.current_revision,
+      indexedAt: row.indexed_at,
+    };
+  }
+
   // ---------------------------------------------------------------------
   // Files
   // ---------------------------------------------------------------------
@@ -87,6 +131,13 @@ export class GraphStore {
       .prepare('SELECT path, language, content_hash FROM files WHERE repository_id = ?')
       .all(repositoryId) as { path: string; language: string; content_hash: string }[];
     return rows.map((row) => ({ path: row.path, language: row.language, contentHash: row.content_hash }));
+  }
+
+  countFiles(repositoryId: number): number {
+    const row = this.db
+      .prepare('SELECT COUNT(*) AS count FROM files WHERE repository_id = ?')
+      .get(repositoryId) as { count: number };
+    return row.count;
   }
 
   // ---------------------------------------------------------------------
@@ -155,6 +206,44 @@ export class GraphStore {
     const rows = this.db
       .prepare('SELECT * FROM nodes WHERE repository_id = ? AND type = ?')
       .all(repositoryId, type);
+    return rows.map((row) => mapNodeRow(row as never));
+  }
+
+  /**
+   * Bulk node listing for the graph API, optionally filtered by type and
+   * capped by `limit` — the explorer must never dump an unbounded graph
+   * into one response.
+   */
+  listNodes(repositoryId: number, options: ListNodesOptions = {}): GraphNode[] {
+    const params: unknown[] = [repositoryId];
+    let sql = 'SELECT * FROM nodes WHERE repository_id = ?';
+
+    if (options.types && options.types.length > 0) {
+      sql += ` AND type IN (${options.types.map(() => '?').join(', ')})`;
+      params.push(...options.types);
+    }
+    sql += ' ORDER BY id';
+    if (options.limit !== undefined) {
+      sql += ' LIMIT ?';
+      params.push(options.limit);
+    }
+
+    const rows = this.db.prepare(sql).all(...(params as never[]));
+    return rows.map((row) => mapNodeRow(row as never));
+  }
+
+  /** Case-insensitive substring search over name, qualified name, and file path. */
+  searchNodes(repositoryId: number, query: string, limit = 50): GraphNode[] {
+    const pattern = `%${escapeLikePattern(query)}%`;
+    const rows = this.db
+      .prepare(
+        `SELECT * FROM nodes
+         WHERE repository_id = ?
+           AND (name LIKE ? ESCAPE '\\' OR qualified_name LIKE ? ESCAPE '\\' OR file_path LIKE ? ESCAPE '\\')
+         ORDER BY name
+         LIMIT ?`,
+      )
+      .all(repositoryId, pattern, pattern, pattern, limit);
     return rows.map((row) => mapNodeRow(row as never));
   }
 
@@ -286,6 +375,25 @@ export class GraphStore {
     return row.count;
   }
 
+  /** Bulk edge listing for the graph API, optionally filtered by type and capped by `limit`. */
+  listEdges(repositoryId: number, options: ListEdgesOptions = {}): GraphEdge[] {
+    const params: unknown[] = [repositoryId];
+    let sql = 'SELECT * FROM edges WHERE repository_id = ?';
+
+    if (options.types && options.types.length > 0) {
+      sql += ` AND type IN (${options.types.map(() => '?').join(', ')})`;
+      params.push(...options.types);
+    }
+    sql += ' ORDER BY id';
+    if (options.limit !== undefined) {
+      sql += ' LIMIT ?';
+      params.push(options.limit);
+    }
+
+    const rows = this.db.prepare(sql).all(...(params as never[]));
+    return rows.map((row) => mapEdgeRow(row as never));
+  }
+
   countEdgesByType(repositoryId: number): Partial<Record<GraphEdgeType, number>> {
     const rows = this.db
       .prepare('SELECT type, COUNT(*) AS count FROM edges WHERE repository_id = ? GROUP BY type')
@@ -315,4 +423,8 @@ export class GraphStore {
   ): PathStep[] | null {
     return findPath(this, fromNodeId, toNodeId, options);
   }
+}
+
+function escapeLikePattern(raw: string): string {
+  return raw.replace(/\\/g, '\\\\').replace(/%/g, '\\%').replace(/_/g, '\\_');
 }

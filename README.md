@@ -11,10 +11,11 @@ current implementation status.
 ## Status
 
 Early, incremental build. **Implemented so far: Milestone 1 (repository
-scanning), Milestone 2 (JS/TS + Markdown parsing), and Milestone 3 (the
-persistent dependency graph).** Change analysis against arbitrary git
-revisions, impact analysis, generation, validation, the graph explorer UI,
-and GitHub integration are not built yet.
+scanning), Milestone 2 (JS/TS + Markdown parsing), Milestone 3 (the
+persistent dependency graph), and Milestone 4 (an HTTP API and a React
+graph explorer over it).** Change analysis against arbitrary git revisions,
+impact analysis, generation, validation, and GitHub integration are not
+built yet.
 
 ## Requirements
 
@@ -46,6 +47,29 @@ Re-running `index` only reprocesses files that changed since the last run —
 an unchanged repository produces no new nodes or edges. That directory is
 safe to delete — it will be rebuilt from scratch on the next `index` run.
 
+### Graph explorer (API + web UI)
+
+In one terminal, start the API server (defaults to `.tracedocs/server.db`
+in the current directory; override with `TRACEDOCS_DB`, and the port with
+`PORT`, default 4000):
+
+```sh
+pnpm --filter @tracedocs/server run dev
+```
+
+In another terminal, start the web app:
+
+```sh
+pnpm --filter @tracedocs/web run dev
+```
+
+Open the printed URL (default `http://localhost:5173`). From there you can
+index a repository by path directly in the UI (this indexes it into the
+*server's* database, separately from any `.tracedocs/graph.db` you created
+via the CLI — see `docs/architecture.md` for why), then explore it: search,
+click nodes, expand neighbors, filter by type, and highlight the path
+between two nodes.
+
 ## Development
 
 ```sh
@@ -65,7 +89,9 @@ pnpm run typecheck # builds project references and reports type errors
 | `@tracedocs/parser-md` | Markdown heading/section/link/annotation extraction |
 | `@tracedocs/graph` | SQLite-backed dependency graph: schema, migrations, storage, traversal |
 | `@tracedocs/indexer` | Wires the scanner and both parsers into the graph |
+| `@tracedocs/server` | Fastify HTTP API over the graph |
+| `@tracedocs/web` | React/Vite/Cytoscape.js graph explorer |
 | `@tracedocs/cli` | `tracedocs` command line entry point |
 
 More packages (`change-analyzer`, `impact-analyzer`, `generator`,
-`validator`, `server`, `web`) are added as their milestones land.
+`validator`) are added as their milestones land.

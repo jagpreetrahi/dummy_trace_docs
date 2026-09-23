@@ -25,8 +25,8 @@ packages/
 ├── generator/        LLM provider abstraction + patch generation (Milestone 7)
 ├── validator/         Markdown/patch validation (Milestone 8)
 ├── cli/              `tracedocs` command line entry point
-├── server/           Fastify API (Milestone 4)
-└── web/              React/Vite graph explorer (Milestone 4)
+├── server/           Fastify API over the graph (Milestone 4 — done)
+└── web/              React/Vite/Cytoscape graph explorer (Milestone 4 — done)
 ```
 
 Dependencies flow one way: `core` has no dependencies; every other package may
@@ -200,6 +200,70 @@ receives a bounded context object, not the whole repository.
   functions still exist and are still tested — they're just no longer the
   thing the CLI's `index` command uses.
 
+## Key decisions made in Milestone 4
+
+- **Two new packages, not one.** `server` (Fastify + Zod) exposes the graph
+  over HTTP; `web` (React + Vite + Cytoscape) consumes that HTTP API. They
+  don't share process memory or import each other — `web` only knows JSON
+  shapes over `fetch`, matching how the brief's non-goals rule out a
+  "mandatory" tight coupling and keeps the API independently useful (a
+  future GitHub Action or another UI could call it too).
+- **The server's graph database is separate from the CLI's per-repo one.**
+  `tracedocs index` (CLI) writes `<repo>/.tracedocs/graph.db`. The server
+  defaults to its own `.tracedocs/server.db` (overridable via `TRACEDOCS_DB`)
+  and *registers* repositories into it via `POST /api/repositories/index`,
+  because the schema's `repositories` table already supports many
+  repositories in one database — `GET /api/repositories` listing several
+  only makes sense against one shared file. Both paths run the identical
+  `indexRepository()`; only which `GraphStore` file receives the writes
+  differs.
+- **Validation with Zod, not a schema-validation Fastify plugin.** Route
+  handlers call a small `parseOrThrow(schema, input)` helper directly
+  rather than wiring `fastify-type-provider-zod` — one fewer dependency's
+  worth of integration surface for a request shape this simple (path/query
+  params, one POST body), at the cost of not getting OpenAPI generation
+  for free. Revisit if the API surface grows enough that hand-written
+  validation stops being the clear win.
+- **`GraphStore.listNodes`/`listEdges` always cap results (`limit`,
+  default 300, max 2000).** Matches the brief's explicit warning against
+  rendering thousands of nodes with no strategy — the graph endpoint
+  reports `truncated: true` when the cap was hit rather than silently
+  returning a partial graph that looks complete.
+- **The `/graph` endpoint drops edges whose endpoints aren't both in the
+  returned node set.** Filtering to `types=function` and still receiving a
+  `CONTAINS` edge pointing at a `file` node the client was never sent would
+  render as a dangling arrow into nothing; edges are filtered to only
+  those fully contained in whatever node set (filtered and/or
+  limit-truncated) was actually returned.
+- **Cytoscape integrated directly, not through a React wrapper.** The
+  brief specifies Cytoscape.js; there's no dependency decision to explain
+  there. What's a real decision: `GraphCanvas` drives the `cytoscape` core
+  library imperatively from a handful of `useEffect`s (init once; replace
+  all elements when `nodes`/`edges` change; toggle `selected`/`highlighted`
+  classes when selection changes) rather than adding a React-Cytoscape
+  binding package — the lifecycle is small enough that the extra
+  abstraction wouldn't pay for itself.
+- **React 18 and Vite 6, not the newest majors (React 19, Vite 8).** Both
+  work fine with this project's Node/TypeScript setup, but this project
+  already introduced enough new surface (`node:sqlite`, a fresh monorepo,
+  a from-scratch API) that picking the most battle-tested stable majors
+  for the one part with the largest ecosystem (React) was the lower-risk
+  call. Nothing here depends on a React 19-only or Vite 8-only feature.
+- **Checkboxes default to fully-checked, not empty-means-all.** An early
+  draft used "empty type filter set = show everything" to avoid sending
+  redundant query params, but that makes unchecking one box from a
+  fully-checked state add it back as the *only* selected type (toggling
+  into an empty set reads as "select all" both before and after, so the
+  direction of the click is ambiguous). Filter state now always holds the
+  literal set of currently-checked types, applied as-is.
+- **UI copy translates the data model's exact vocabulary
+  (`documentation_section`, `CALLS`, `evidence_type`) into plain language**
+  (`labels.ts`: "Doc section", "Calls", tooltips explaining each
+  relationship) everywhere it's shown to a person, while the API and
+  database keep the brief's precise terms. Surfaced directly by user
+  testing during this milestone: the raw schema vocabulary was
+  reported as confusing on first use of the explorer.
+
 ## Trust boundaries (see brief §12)
 
 - The scanner never executes repository code or documentation content —
@@ -304,13 +368,53 @@ creation, unresolved-import and unresolved-annotation reporting,
 same-repository-twice idempotency, unrelated-file-untouched, rename
 detection, and delete-with-dangling-reference). Full workspace: 98 tests.
 
+**Milestone 4 (graph visualization) is implemented and tested:**
+
+- `@tracedocs/server` — Fastify API in front of `GraphStore`:
+  `GET /api/repositories` (list, with counts), `GET /api/repositories/:id`
+  (detail + per-type breakdowns), `POST /api/repositories/index` (runs
+  `indexRepository` against the server's own graph database),
+  `GET /api/repositories/:id/graph` (bounded, type-filterable node/edge
+  dump for rendering), `GET /api/repositories/:id/nodes/:nodeId` (detail +
+  edges), `GET /api/repositories/:id/nodes/:nodeId/neighbors`
+  (bounded-depth traversal), `GET /api/repositories/:id/search`
+  (substring search), and `GET /api/repositories/:id/path` (shortest path,
+  for highlighting). All inputs validated with Zod; not-found and
+  validation failures return structured `{ error: { message } }` JSON with
+  the right status code, never a raw exception. `GraphStore` gained
+  `listRepositories`/`getRepository`, `countFiles`, `listNodes`/`listEdges`
+  (type-filtered, capped), and `searchNodes` to support this.
+- `@tracedocs/web` — React + Vite + Cytoscape.js explorer: repository
+  picker and "analyze a new folder" form, a dashboard of real counts
+  (files/nodes/edges, broken down by type — nothing invented), node-type
+  and relationship-type filter checkboxes, a debounced search box, click-
+  to-inspect node details (metadata, JSDoc, incoming/outgoing edges),
+  "Expand neighbors" (bounded-depth, merges into the current view), a
+  From/To path finder that highlights the connecting route in orange, an
+  accessible sortable/filterable HTML table as an alternative to the
+  canvas, and a plain-language legend/tooltip layer plus a step-by-step
+  onboarding panel (added after a user-testing pass on this milestone
+  surfaced that raw schema vocabulary — `documentation_section`, `CALLS` —
+  and the lack of any first-run guidance were both genuinely confusing).
+
+20 new server tests (route validation, not-found handling, node/edge-type
+filtering, dangling-edge exclusion from truncated graphs, search, path
+finding including the no-path and cross-repository-node cases) plus 13 new
+graph tests for the bulk query methods. Full workspace: 131 tests. The web
+package has no automated tests yet — verified via `tsc --noEmit`, a
+production `vite build`, and a manual pass (API calls, then a user-testing
+round on the actual rendered UI); see the note about automated frontend
+testing being a gap to close before Milestone 4 would be called fully done
+by the brief's own testing requirements (§13 doesn't enumerate UI tests
+explicitly, but "test important behavior" (§18 rule 9) applies here too).
+
 **Not yet implemented:** change analysis (Milestone 5 — currently
 `indexRepository` diffs the working tree against the graph's last-indexed
 state, not two arbitrary git revisions), impact analysis, generation,
-validation, the graph explorer UI, and GitHub integration. Within graph
-scope specifically: `TESTS`/`REFERENCES`/`CONFIGURES`/`EXPOSES`/`LINKS_TO`
-edge types and `api_endpoint`/`configuration_item`/`test`/`code_example`
-node types exist in the brief's model but nothing populates them yet — see
-the `GraphNodeType`/`GraphEdgeType` unions in `packages/core/src/graph-types.ts`
+validation, and GitHub integration. Within graph scope specifically:
+`TESTS`/`REFERENCES`/`CONFIGURES`/`EXPOSES`/`LINKS_TO` edge types and
+`api_endpoint`/`configuration_item`/`test`/`code_example` node types exist
+in the brief's model but nothing populates them yet — see the
+`GraphNodeType`/`GraphEdgeType` unions in `packages/core/src/graph-types.ts`
 for exactly what's live. See the milestone list in the project brief for
 sequencing.
