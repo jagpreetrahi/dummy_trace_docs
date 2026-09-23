@@ -11,6 +11,7 @@
     { "path": "packages/impact-analyzer" },
     { "path": "packages/generator" },
     { "path": "packages/validator" },
+    { "path": "packages/report" },
     { "path": "packages/server" },
     { "path": "packages/cli" }
   ]

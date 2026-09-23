@@ -6,3 +6,4 @@ export * from './change-types.js';
 export * from './impact-types.js';
 export * from './generator-types.js';
 export * from './validator-types.js';
+export * from './report-types.js';

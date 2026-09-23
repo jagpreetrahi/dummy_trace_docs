@@ -24,6 +24,7 @@ packages/
 ├── impact-analyzer/  graph-based documentation impact rules (Milestone 6 — done)
 ├── generator/        LLM provider abstraction + patch generation (Milestone 7 — done)
 ├── validator/         Markdown/patch validation + safe local apply (Milestone 8 — done)
+├── report/            structured JSON/Markdown/annotation reports (Milestone 9 — done)
 ├── cli/              `tracedocs` command line entry point
 ├── server/           Fastify API over the graph (Milestone 4 — done)
 └── web/              React/Vite/Cytoscape graph explorer (Milestone 4 — done)
@@ -564,6 +565,68 @@ receives a bounded context object, not the whole repository.
   reconstructing the "what will this document look like after applying"
   view rather than validating the patch text in isolation.
 
+## Key decisions made in Milestone 9
+
+- **`@tracedocs/report` depends on `@tracedocs/core` only — nothing else.**
+  `Report`'s `unresolved` sub-fields use inline structural shapes
+  (`{ filePath, specifier }`, `{ sourceStableId, targetStableId, edgeType:
+  string }`) instead of importing `UnresolvedImport`/`UnresolvedAnnotation`
+  from `indexer` or `DanglingReference` from `graph`. TypeScript's
+  structural typing means the CLI can pass `indexResult.unresolvedImports`
+  straight through without either side needing to import the other's
+  types — the smallest possible dependency footprint for a package whose
+  entire job is formatting data everyone else already produced.
+- **Three renderers, one `Report` object — never three separate code
+  paths that each recompute the analysis.** `buildReport` runs once;
+  `renderJson`/`renderMarkdown`/`renderAnnotations` are pure functions
+  over its output. This is what guarantees the job summary and the inline
+  annotations in the GitHub workflow are never out of sync with each
+  other — they're two views of one `Report`, not two independent
+  analyses that could disagree.
+- **Confirmed facts and inferred relationships are visually separated in
+  the Markdown output, not just internally typed differently.** The
+  "Changed files"/"Changed symbols" sections are headed
+  `_(confirmed — from git)_` / `_(confirmed — from static parsing)_`; the
+  findings section is headed `_(evidence-based, not proof of
+  correctness)_`; proposed patches are headed `_(AI-generated — review
+  before applying)_`. Brief §I's "must distinguish confirmed facts from
+  inferred relationships" is satisfied by what a reader actually sees on
+  the page, not only by the underlying type names.
+- **GitHub inline annotations, not a PR comment, are the default
+  "advisory annotations" mechanism** (brief's Milestone 9 task list).
+  `::warning file=...,line=...::message` workflow commands become
+  annotations on the PR's "Files changed" tab for that run automatically
+  — no `pull-requests: write` permission needed, unlike posting an actual
+  comment via the REST API. `HIGH`-certainty findings become `warning`;
+  everything else becomes the quieter `notice`, mirroring the
+  certainty-to-visual-weight choice already made for the web explorer's
+  path highlighting.
+- **The workflow's default job needs only `contents: read` +
+  `pull-requests: read`, and the PR-comment alternative is a separate
+  job, disabled by default (`if: false`), with its own narrowly-scoped
+  `pull-requests: write`** — not a flag on the same job. This makes the
+  elevated-permission path impossible to enable accidentally as a side
+  effect of some other change to the workflow, and keeps brief §J's
+  "should not require write permissions" true of the actual default
+  behavior, not just true in the common case.
+- **`fetch-depth: 0` (full history) in the example workflow, not a
+  minimal shallow fetch.** `tracedocs report` needs to read file content
+  at the PR's base commit (via `git show <base>:<path>`, same as
+  `change-analyzer` always has), which requires that commit to actually
+  be present locally — a shallow checkout of just the PR's commits
+  wouldn't include it. Full history is the simplest default that's always
+  correct; documented in `docs/github-actions.md` as a place to optimize
+  once a repository's checkout time actually matters, rather than
+  something to get cleverer about upfront.
+- **The checked-in workflow builds TraceDocs from source, not from a
+  published package — because there is no published package yet.** It
+  analyzes this repository's own pull requests (dogfooding), which is
+  honest about what actually exists right now rather than writing a
+  workflow that assumes a future `npm install @tracedocs/cli`.
+  `docs/github-actions.md` documents exactly what changes once that
+  package exists and how another repository adopts this workflow before
+  then.
+
 ## Trust boundaries (see brief §12)
 
 - The scanner never executes repository code or documentation content —
@@ -880,9 +943,60 @@ correctly writing the file while preserving unrelated content, and a
 subsequent run correctly finding nothing left to flag once the
 underlying finding was resolved.
 
-**Not yet implemented:** GitHub integration (Milestone 9), and persisted
-analysis runs/findings/patches (see the Milestone 8 decisions above for
-the schema issue driving that deferral). Within graph scope specifically:
+**Milestone 9 (GitHub Actions integration) is implemented and tested:**
+
+- `@tracedocs/report` — `buildReport(input)` assembles a `Report` from a
+  `ChangeSet`, `ImpactFinding[]`, unresolved-items data, and optionally
+  `ReportProposedPatchEntry[]` (patches + their validation, only when
+  generation was requested). `renderJson`/`renderMarkdown`/
+  `renderAnnotations` are pure functions over that one `Report` object —
+  the three output formats can never disagree with each other because
+  they're views of the same data, not three independent analyses.
+  `renderMarkdown` visually separates confirmed facts (file/symbol
+  changes) from evidence-based inference (findings) from AI output
+  (proposed patches), each section explicitly labeled as such.
+  `renderAnnotations` emits GitHub workflow commands
+  (`::warning file=...,line=...::message` / `::notice ...`) that become
+  inline PR annotations without any write permission.
+- CLI: `tracedocs report <path> --base <revision> [--target <revision>]
+  [--format markdown|json|annotations] [--out <file>] [--provider
+  mock|anthropic]` — advisory only (always exits 0 once analysis
+  completes; this is a report, not a pass/fail gate).
+- `.github/workflows/tracedocs.yml` — a real, working workflow in this
+  repository (not just a template) that runs on every pull request:
+  checks out full history (needed to read file content at the PR's base
+  commit), builds TraceDocs, writes the Markdown report to the job
+  summary, and emits inline annotations — using only `contents: read` +
+  `pull-requests: read`. A second job posts the report as an actual PR
+  comment instead, disabled by default (`if: false`) with its own
+  separately-scoped `pull-requests: write`, exactly matching brief §J's
+  "keep write access opt-in and narrowly scoped."
+  `docs/github-actions.md` documents the minimum permissions, the setup
+  process, and how another repository would adopt this today (build from
+  source) versus once TraceDocs is published as a package.
+
+23 new tests in `@tracedocs/report` (summary aggregation by action and
+certainty, JSON round-tripping, every Markdown section's presence/absence
+logic including the no-findings and no-unresolved-items cases, a
+PROPOSED-vs-NEEDS_MORE_INFORMATION patch rendering distinction, and the
+annotation renderer's escaping/level/line-range logic). Two test-authoring
+mistakes were caught and fixed by the test run itself, not left
+undiagnosed: an assertion that expected spaces and parentheses to be
+percent-escaped in a workflow-command property (only `%`, CR, LF, `,`,
+and `:` actually need it per GitHub's own rules) and a diff-rendering
+assertion missing the space after `-`/`+` that the renderer actually
+emits. Full workspace: 243 tests. Manually verified end-to-end against a
+real fixture repository in all three formats (`markdown`, `json` via
+`--out`, and `annotations`), plus the CLI's format/provider validation
+rejecting bad input before doing any work.
+
+**Not yet implemented:** persisted analysis runs/findings/patches (see
+the Milestone 8 decisions above for the schema issue driving that
+deferral — `tracedocs report`'s output is not currently stored anywhere
+between invocations); a published `@tracedocs/cli` package (the workflow
+builds from source for now); and the non-goal features explicitly out of
+this project's scope per brief §15 (auto-merge, automatic PR creation,
+etc.). Within graph scope specifically:
 `TESTS`/`REFERENCES`/`CONFIGURES`/`EXPOSES`/`LINKS_TO` edge types and
 `api_endpoint`/`configuration_item`/`test`/`code_example` node types exist
 in the brief's model but nothing populates them yet — see the

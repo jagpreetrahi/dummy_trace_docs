@@ -6,19 +6,22 @@ change may have made documentation stale, and proposes reviewable,
 evidence-backed fixes. It never auto-merges generated documentation.
 
 See [`docs/architecture.md`](docs/architecture.md) for the system design and
-current implementation status, and
+current implementation status,
 [`docs/lessons-learned.md`](docs/lessons-learned.md) for real bugs found
-along the way (and how), plus the key decisions behind the current design.
+along the way (and how), plus the key decisions behind the current design,
+and [`docs/github-actions.md`](docs/github-actions.md) for the CI
+workflow's setup and permissions.
 
 ## Status
 
-Early, incremental build. **Implemented so far: Milestone 1 (repository
-scanning), Milestone 2 (JS/TS + Markdown parsing), Milestone 3 (the
-persistent dependency graph), Milestone 4 (an HTTP API and a React graph
-explorer over it), Milestone 5 (git change analysis), Milestone 6
-(documentation impact analysis), Milestone 7 (documentation patch
-generation), and Milestone 8 (validation and safe local patch
-application).** GitHub integration is not built yet.
+Early, incremental build. **All nine milestones from the project brief are
+implemented**: repository scanning, JS/TS + Markdown parsing, the
+persistent dependency graph, an HTTP API + React graph explorer, git
+change analysis, documentation impact analysis, documentation patch
+generation, patch validation and safe local application, and GitHub
+Actions integration. See `docs/architecture.md` for exactly what's
+implemented versus explicitly deferred within each of those (a fair
+amount — this remains an MVP, not a finished product).
 
 ## Requirements
 
@@ -137,6 +140,23 @@ Nothing is ever written without `--yes`, and nothing invalid or stale is
 ever written even with it — each patch is re-validated immediately
 before its write, independent of the validation already shown above it.
 
+### Generating a report (for CI)
+
+```sh
+node packages/cli/dist/index.js report <path-to-repo> --base <revision> [--format markdown|json|annotations] [--out <file>]
+```
+
+Combines change analysis and impact analysis into one structured report,
+in whichever format you need: `markdown` (default — readable, good for a
+CI job summary), `json` (machine-readable, includes everything the
+Markdown does), or `annotations` (GitHub Actions workflow commands that
+become inline PR annotations). Add `--out <file>` to write to a file
+instead of stdout; add `--provider mock|anthropic` to also include
+generated-and-validated patches in the report. This is what
+`.github/workflows/tracedocs.yml` runs on every pull request — see
+`docs/github-actions.md` for the workflow itself, its permissions, and
+how to adopt it elsewhere.
+
 ## Development
 
 ```sh
@@ -162,8 +182,7 @@ pnpm run typecheck # builds project references and reports type errors
 | `@tracedocs/impact-analyzer` | Graph-based documentation impact findings for a change set |
 | `@tracedocs/generator` | LLM provider abstraction + patch generation (mock + Anthropic adapters) |
 | `@tracedocs/validator` | Patch validation (structure, links, staleness) + safe local application |
+| `@tracedocs/report` | Structured JSON/Markdown/GitHub-annotation reports |
 | `@tracedocs/cli` | `tracedocs` command line entry point |
 
-All packages from the brief's MVP scope now exist; remaining milestones
-(GitHub integration) extend the CLI/workflow rather than adding new
-packages.
+All packages from the brief's MVP scope now exist.

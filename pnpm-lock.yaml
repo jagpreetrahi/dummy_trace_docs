@@ -60,6 +60,9 @@ importers:
       '@tracedocs/change-analyzer':
         specifier: workspace:*
         version: link:../change-analyzer
+      '@tracedocs/core':
+        specifier: workspace:*
+        version: link:../core
       '@tracedocs/generator':
         specifier: workspace:*
         version: link:../generator
@@ -72,6 +75,9 @@ importers:
       '@tracedocs/indexer':
         specifier: workspace:*
         version: link:../indexer
+      '@tracedocs/report':
+        specifier: workspace:*
+        version: link:../report
       '@tracedocs/validator':
         specifier: workspace:*
         version: link:../validator
@@ -201,6 +207,16 @@ importers:
       typescript:
         specifier: ^5.6.3
         version: 5.9.3
+    devDependencies:
+      vitest:
+        specifier: ^3.2.4
+        version: 3.2.7(@types/debug@4.1.13)(@types/node@22.20.4)(tsx@4.23.15)
+
+  packages/report:
+    dependencies:
+      '@tracedocs/core':
+        specifier: workspace:*
+        version: link:../core
     devDependencies:
       vitest:
         specifier: ^3.2.4

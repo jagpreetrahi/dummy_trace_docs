@@ -13,10 +13,12 @@
   },
   "dependencies": {
     "@tracedocs/change-analyzer": "workspace:*",
+    "@tracedocs/core": "workspace:*",
     "@tracedocs/generator": "workspace:*",
     "@tracedocs/graph": "workspace:*",
     "@tracedocs/impact-analyzer": "workspace:*",
     "@tracedocs/indexer": "workspace:*",
+    "@tracedocs/report": "workspace:*",
     "@tracedocs/validator": "workspace:*",
     "commander": "^12.1.0"
   },

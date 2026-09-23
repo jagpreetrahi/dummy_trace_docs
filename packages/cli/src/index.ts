@@ -1,13 +1,15 @@
 #!/usr/bin/env node
-import { mkdir } from 'node:fs/promises';
+import { mkdir, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { analyzeChanges } from '@tracedocs/change-analyzer';
 import { createAnthropicProvider, createMockProvider, generateDocumentationUpdates } from '@tracedocs/generator';
 import { GraphStore } from '@tracedocs/graph';
 import { indexRepository } from '@tracedocs/indexer';
 import { analyzeImpact } from '@tracedocs/impact-analyzer';
+import { buildReport, renderAnnotations, renderJson, renderMarkdown } from '@tracedocs/report';
 import { applyPatch, validatePatch } from '@tracedocs/validator';
 import { Command } from 'commander';
+import type { ReportProposedPatchEntry } from '@tracedocs/core';
 
 const program = new Command();
 
@@ -239,6 +241,83 @@ program
       store.close();
     }
   });
+
+program
+  .command('report')
+  .description(
+    'Generate a structured documentation-impact report for --base vs. --target (default: the working tree). ' +
+      'CI-friendly: exits 0 whenever analysis completes, regardless of what it found — this is an advisory ' +
+      'report, not a pass/fail gate. Patch generation is only included when --provider is given.',
+  )
+  .argument('[path]', 'repository path', '.')
+  .requiredOption('--base <revision>', 'base revision to compare from')
+  .option('--target <revision>', 'target revision to compare to (default: the working tree)')
+  .option('--format <format>', 'markdown (default), json, or annotations (GitHub Actions workflow commands)', 'markdown')
+  .option('--out <file>', 'write the report to a file instead of stdout')
+  .option('--provider <name>', 'also generate and validate patches: mock or anthropic (omit to skip generation)')
+  .action(
+    async (
+      pathArg: string,
+      options: { base: string; target?: string; format: string; out?: string; provider?: string },
+    ) => {
+      if (!['markdown', 'json', 'annotations'].includes(options.format)) {
+        throw new Error(`Unknown format "${options.format}" — expected "markdown", "json", or "annotations".`);
+      }
+      if (options.provider && options.provider !== 'mock' && options.provider !== 'anthropic') {
+        throw new Error(`Unknown provider "${options.provider}" — expected "mock" or "anthropic".`);
+      }
+
+      const repoRoot = resolve(pathArg);
+      const changeSet = await analyzeChanges(repoRoot, options.base, options.target);
+      const store = await openGraphStore(repoRoot);
+
+      try {
+        const indexResult = await indexRepository(repoRoot, store);
+        const findings = analyzeImpact(changeSet, store, indexResult.repositoryId, indexResult.danglingReferences);
+        const validatorOptions = { store, repositoryId: indexResult.repositoryId };
+
+        let proposedPatches: ReportProposedPatchEntry[] = [];
+        if (options.provider) {
+          const provider = options.provider === 'anthropic' ? createAnthropicProvider() : createMockProvider();
+          const outcomes = await generateDocumentationUpdates(findings, changeSet, provider);
+          proposedPatches = await Promise.all(
+            outcomes.map(async ({ finding, result }): Promise<ReportProposedPatchEntry> => {
+              if (result.status !== 'PROPOSED') return { finding, result };
+              const validation = await validatePatch(result.patch, repoRoot, validatorOptions);
+              return { finding, result, validation };
+            }),
+          );
+        }
+
+        const report = buildReport({
+          changeSet,
+          findings,
+          unresolved: {
+            imports: indexResult.unresolvedImports,
+            annotations: indexResult.unresolvedAnnotations,
+            danglingReferences: indexResult.danglingReferences,
+          },
+          proposedPatches,
+        });
+
+        const output =
+          options.format === 'json'
+            ? renderJson(report)
+            : options.format === 'annotations'
+              ? renderAnnotations(report)
+              : renderMarkdown(report);
+
+        if (options.out) {
+          await writeFile(resolve(options.out), output, 'utf-8');
+          console.error(`Report written to ${options.out}`);
+        } else {
+          console.log(output);
+        }
+      } finally {
+        store.close();
+      }
+    },
+  );
 
 function printValidation(validation: Awaited<ReturnType<typeof validatePatch>>): void {
   console.log(`  Validation: ${validation.valid ? 'valid' : 'INVALID'}`);

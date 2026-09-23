@@ -12,6 +12,8 @@
     { "path": "../change-analyzer" },
     { "path": "../impact-analyzer" },
     { "path": "../generator" },
-    { "path": "../validator" }
+    { "path": "../validator" },
+    { "path": "../report" },
+    { "path": "../core" }
   ]
 }
