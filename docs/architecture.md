@@ -18,7 +18,8 @@ packages/
 ├── scanner/          repository discovery, git revision, hashing (Milestone 1 — done)
 ├── parser-ts/        JS/TS symbol extraction (Milestone 2 — done)
 ├── parser-md/        Markdown section/annotation extraction (Milestone 2 — done)
-├── graph/            SQLite-backed dependency graph + migrations (Milestone 3)
+├── graph/            SQLite-backed dependency graph + migrations (Milestone 3 — done)
+├── indexer/          wires scanner+parsers+graph into indexRepository() (Milestone 3 — done)
 ├── change-analyzer/  git diff -> structured change set (Milestone 5)
 ├── impact-analyzer/  graph-based documentation impact rules (Milestone 6)
 ├── generator/        LLM provider abstraction + patch generation (Milestone 7)
@@ -115,6 +116,90 @@ receives a bounded context object, not the whole repository.
   whether `target` actually resolves to a real symbol requires the graph
   and is deferred to Milestone 3/6.
 
+## Key decisions made in Milestone 3
+
+- **`node:sqlite` instead of `better-sqlite3`.** The brief suggests SQLite
+  without mandating a driver. `better-sqlite3` is the common choice but
+  ships native bindings requiring a C toolchain to build — the same class
+  of Windows risk flagged for tree-sitter in Milestone 0. Node 22.5+ has a
+  built-in `node:sqlite` (`DatabaseSync`) with no native build step at all,
+  confirmed working here without any flag. It's marked experimental
+  (API may change before it stabilizes), so all access goes through
+  `GraphStore` — if it ever needs replacing, that's the only file that
+  changes. `package.json` pins `"engines": {"node": ">=22.5.0"}` on the
+  `graph` package accordingly.
+- **Surrogate integer keys, not the stable string id, as the primary key.**
+  `nodes.id`/`edges.id` are `INTEGER PRIMARY KEY` for fast joins and small
+  foreign keys; `nodes.stable_id` (the parser/indexer-produced string) is a
+  separately unique-indexed column. Call sites address nodes by stable id
+  (`NewGraphEdge.sourceStableId`) and never need to know or track the
+  surrogate key — `GraphStore.upsertEdge` resolves it internally.
+- **Different evidence types for the same edge never collide.** The edges
+  table's uniqueness constraint is `(repository_id, source_node_id,
+  target_node_id, type, evidence_type)` — evidence type is part of the key,
+  not just a column. A `static_analysis` edge and an `ai_inferred` edge
+  between the same two nodes are two separate rows, so a future weaker
+  AI-inferred guess can never silently overwrite a stronger static-analysis
+  or explicit-annotation edge (required by brief §D); tested in
+  `packages/graph/test/nodesAndEdges.test.ts`.
+- **Certainty is currently always `HIGH`, assigned by rule, not a model.**
+  Every edge Milestone 3 creates (`CONTAINS`, resolved `IMPORTS`, same-file
+  `CALLS`, explicit-annotation `DOCUMENTS`) comes from unambiguous static
+  evidence — the parser found the exact syntax, or a maintainer wrote the
+  annotation — so there's no graded confidence to express yet. `MEDIUM`/`LOW`
+  become meaningful once Milestone 6 adds inferred (non-explicit) doc-code
+  relationships; nothing here treats these labels as calibrated
+  probabilities (brief §F).
+- **Call resolution is same-file only.** `buildCallEdges` resolves a bare
+  identifier to a same-file function, and `this.method()` to a sibling
+  method on the caller's own class — both from evidence already in that
+  one file. Resolving a call through an import binding to another file's
+  export is deferred: it would require carrying each file's import-name ->
+  target mapping into the call resolver, which is a meaningfully bigger
+  piece of cross-file name resolution than "does this edge's target exist."
+  Skipped calls create no edge and are not reported as unresolved (unlike
+  imports/annotations) — an unresolved *declared* relationship (an import,
+  an annotation) is worth surfacing; a call to some arbitrary expression
+  the resolver didn't attempt is not a declared relationship at all, and
+  reporting every one would be mostly noise (any call to a third-party or
+  standard-library function would show up).
+- **Delete-and-reinsert per changed file, not diffing old vs. new symbols.**
+  When a file is (re)indexed, `GraphStore.deleteNodesForFile` removes every
+  node with that `file_path` (cascading their edges) before the fresh parse
+  is inserted. This is what makes a renamed/removed function's old node
+  actually disappear instead of accumulating stale nodes — the alternative
+  (diff old symbols vs. new ones to patch in place) is more code for the
+  same observable result.
+- **Cross-file dangling references are only detected for files touched in
+  the current run.** Before deleting a file's nodes, `deleteNodesForFile`
+  reports edges that crossed into/out of it from a file elsewhere in the
+  repo (`DanglingReference`) — this is how deleting `token.ts` while
+  `index.ts` still imports it gets surfaced. But if `index.ts` itself isn't
+  reprocessed in a later run, its now-broken `IMPORTS` edge was still
+  removed (cascade), just not re-reported as newly-dangling on that later
+  run. Full re-verification of every surviving file's outbound references
+  after an unrelated deletion is a correctness improvement left for the
+  report generator (Milestone 9) rather than the indexer.
+- **`DOCUMENTS` points from code to doc, not doc to code.** This matches
+  the brief's own traversal example diagram (`refreshAccessToken() ->
+  DOCUMENTS -> docs/authentication.md#refresh-tokens`) even though it reads
+  backwards from the English sentence "the doc documents the function" —
+  the diagram is the more authoritative source than the verb.
+- **No `module` node type separate from `file`.** The brief lists File and
+  Module as distinct node types; since this project's units are ES modules
+  and a module is a file, one `file` node type covers both. Revisit only if
+  a future language has a module concept that doesn't map 1:1 to a file.
+- **The old `.tracedocs/manifest.json` is superseded, not kept alongside
+  the graph.** `indexRepository` derives "what changed since last time"
+  from the graph's own `files` table (`buildManifestFromGraph` reshapes it
+  into the same `Manifest` type `diffAgainstManifest` already expects, so
+  Milestone 1's diff logic is reused as-is). Keeping both the JSON manifest
+  and the DB's `files` table would create two sources of truth that could
+  disagree; `tracedocs index` now writes `.tracedocs/graph.db` and no
+  longer writes `.tracedocs/manifest.json`. The scanner package's manifest
+  functions still exist and are still tested — they're just no longer the
+  thing the CLI's `index` command uses.
+
 ## Trust boundaries (see brief §12)
 
 - The scanner never executes repository code or documentation content —
@@ -179,11 +264,53 @@ temporary git repositories.
 calls including the anonymous-callback and dynamic-callee cases,
 headings/sections, links/fences, symbol references, annotations).
 
-**Not yet implemented:** everything from Milestone 3 onward (the persistent
-dependency graph, change analysis, impact analysis, generation, validation,
-UI, GitHub Action). Not yet handled even within parsing scope: routes and
+Not yet handled even within parsing scope: routes and
 configuration-declaration extraction (spec section C mentions these, but
 they require framework-specific pattern matching and aren't in Milestone
 2's task list); interfaces, type aliases, and enums are not extracted as
 symbols since they aren't runtime code the graph needs to track relationships
-for. See the milestone list in the project brief for sequencing.
+for.
+
+**Milestone 3 (dependency graph) is implemented and tested:**
+
+- `@tracedocs/graph` — SQLite schema (all 7 tables from brief §7, via
+  `node:sqlite`) with a numbered-migration runner; `GraphStore`, the single
+  typed entry point for repository/file/node/edge storage plus traversal
+  (`traverse` — bounded-depth BFS, cycle-safe via a visited set) and
+  `findPath` (BFS shortest path, used to explain *how* two nodes connect).
+  Upserts are keyed by stable id so re-indexing an unchanged file creates
+  no duplicates; `deleteNodesForFile` removes a file's nodes (cascading
+  their edges) and reports any edge that crossed into/out of that file from
+  elsewhere as a `DanglingReference`.
+- `@tracedocs/indexer` — `indexRepository(repoRoot, store)` orchestrates
+  scanner + both parsers + the graph: diffs against the graph's own `files`
+  table, re-parses only added/modified files, deletes-and-reinserts each
+  changed file's nodes, then resolves cross-file `IMPORTS` edges (relative
+  specifiers only, against the actual indexed file set), same-file `CALLS`
+  edges (bare identifiers and `this.method()`), and `DOCUMENTS` edges from
+  well-formed `tracedocs:documents` annotations (resolved by file path +
+  qualified name, ambiguous/missing targets reported, never guessed).
+  Removed files are deleted; renamed files are handled as delete-old +
+  add-new (the scanner doesn't do rename detection yet).
+- CLI: `tracedocs index [path]` now scans, parses, and updates
+  `.tracedocs/graph.db`, reporting file changes, total nodes/edges, and any
+  unresolved imports/annotations or new dangling references. `tracedocs
+  graph [path]` prints node/edge counts by type.
+
+29 tests in `graph` (CRUD, upsert idempotency, cascade-delete with dangling
+detection, cycle-safe traversal, path-finding including "no path within
+maxDepth") and 18 in `indexer` (CONTAINS/IMPORTS/CALLS/DOCUMENTS edge
+creation, unresolved-import and unresolved-annotation reporting,
+same-repository-twice idempotency, unrelated-file-untouched, rename
+detection, and delete-with-dangling-reference). Full workspace: 98 tests.
+
+**Not yet implemented:** change analysis (Milestone 5 — currently
+`indexRepository` diffs the working tree against the graph's last-indexed
+state, not two arbitrary git revisions), impact analysis, generation,
+validation, the graph explorer UI, and GitHub integration. Within graph
+scope specifically: `TESTS`/`REFERENCES`/`CONFIGURES`/`EXPOSES`/`LINKS_TO`
+edge types and `api_endpoint`/`configuration_item`/`test`/`code_example`
+node types exist in the brief's model but nothing populates them yet — see
+the `GraphNodeType`/`GraphEdgeType` unions in `packages/core/src/graph-types.ts`
+for exactly what's live. See the milestone list in the project brief for
+sequencing.

@@ -6,5 +6,5 @@
     "composite": true
   },
   "include": ["src"],
-  "references": [{ "path": "../graph" }, { "path": "../indexer" }]
+  "references": [{ "path": "../core" }]
 }

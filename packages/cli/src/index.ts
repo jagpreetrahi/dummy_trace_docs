@@ -1,40 +1,84 @@
 #!/usr/bin/env node
-import { resolve } from 'node:path';
-import {
-  diffAgainstManifest,
-  loadManifest,
-  saveManifest,
-  scanRepository,
-  toManifest,
-} from '@tracedocs/scanner';
+import { mkdir } from 'node:fs/promises';
+import { join, resolve } from 'node:path';
+import { GraphStore } from '@tracedocs/graph';
+import { indexRepository } from '@tracedocs/indexer';
 import { Command } from 'commander';
 
 const program = new Command();
 
 program.name('tracedocs').description('Documentation intelligence and synchronization system');
 
+function graphDbPath(repoRoot: string): string {
+  return join(repoRoot, '.tracedocs', 'graph.db');
+}
+
+async function openGraphStore(repoRoot: string): Promise<GraphStore> {
+  await mkdir(join(repoRoot, '.tracedocs'), { recursive: true });
+  return GraphStore.open(graphDbPath(repoRoot));
+}
+
 program
   .command('index')
-  .description('Scan a repository for supported source and documentation files')
+  .description('Index a repository: scan, parse, and update the dependency graph')
   .argument('[path]', 'repository path', '.')
   .action(async (pathArg: string) => {
     const repoRoot = resolve(pathArg);
+    const store = await openGraphStore(repoRoot);
 
-    const previousManifest = await loadManifest(repoRoot);
-    const scan = await scanRepository(repoRoot);
-    const changes = diffAgainstManifest(scan, previousManifest);
-    await saveManifest(repoRoot, toManifest(scan));
+    try {
+      const result = await indexRepository(repoRoot, store);
 
-    console.log(`Repository: ${scan.repositoryRoot}`);
-    console.log(`Revision:   ${scan.revision ?? '(no commits yet)'}`);
-    console.log(`Files indexed: ${scan.files.length}`);
-    console.log(
-      `Changes since last index: +${changes.added.length} ~${changes.modified.length} -${changes.removed.length} (=${changes.unchanged.length} unchanged)`,
-    );
+      console.log(`Repository: ${repoRoot}`);
+      console.log(`Revision:   ${result.revision ?? '(no commits yet)'}`);
+      console.log(
+        `Files: +${result.filesAdded} ~${result.filesModified} -${result.filesRemoved} (=${result.filesUnchanged} unchanged)`,
+      );
+      console.log(`Graph: ${result.totalNodes} nodes, ${result.totalEdges} edges`);
 
-    for (const path of changes.added) console.log(`  added:    ${path}`);
-    for (const path of changes.modified) console.log(`  modified: ${path}`);
-    for (const path of changes.removed) console.log(`  removed:  ${path}`);
+      if (result.unresolvedImports.length > 0) {
+        console.log(`Unresolved imports (${result.unresolvedImports.length}):`);
+        for (const u of result.unresolvedImports) console.log(`  ${u.filePath} -> ${u.specifier}`);
+      }
+      if (result.unresolvedAnnotations.length > 0) {
+        console.log(`Unresolved annotations (${result.unresolvedAnnotations.length}):`);
+        for (const u of result.unresolvedAnnotations) console.log(`  ${u.filePath}: ${u.target} (${u.reason})`);
+      }
+      if (result.danglingReferences.length > 0) {
+        console.log(`Dangling references from this run's deletions (${result.danglingReferences.length}):`);
+        for (const d of result.danglingReferences) {
+          console.log(`  ${d.sourceStableId} --${d.edgeType}--> ${d.targetStableId} (target no longer exists)`);
+        }
+      }
+    } finally {
+      store.close();
+    }
+  });
+
+program
+  .command('graph')
+  .description('Print a summary of the indexed dependency graph')
+  .argument('[path]', 'repository path', '.')
+  .action(async (pathArg: string) => {
+    const repoRoot = resolve(pathArg);
+    const store = await openGraphStore(repoRoot);
+
+    try {
+      const repositoryId = store.upsertRepository(repoRoot);
+
+      console.log(`Repository: ${repoRoot}`);
+      console.log(`Total nodes: ${store.countNodes(repositoryId)}`);
+      for (const [type, count] of Object.entries(store.countNodesByType(repositoryId))) {
+        console.log(`  ${type}: ${count}`);
+      }
+
+      console.log(`Total edges: ${store.countEdges(repositoryId)}`);
+      for (const [type, count] of Object.entries(store.countEdgesByType(repositoryId))) {
+        console.log(`  ${type}: ${count}`);
+      }
+    } finally {
+      store.close();
+    }
   });
 
 program.parseAsync(process.argv).catch((error: unknown) => {

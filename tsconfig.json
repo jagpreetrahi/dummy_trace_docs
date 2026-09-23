@@ -5,6 +5,8 @@
     { "path": "packages/scanner" },
     { "path": "packages/parser-ts" },
     { "path": "packages/parser-md" },
+    { "path": "packages/graph" },
+    { "path": "packages/indexer" },
     { "path": "packages/cli" }
   ]
 }

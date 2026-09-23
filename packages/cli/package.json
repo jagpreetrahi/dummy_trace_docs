@@ -12,8 +12,8 @@
     "dev": "tsx src/index.ts"
   },
   "dependencies": {
-    "@tracedocs/core": "workspace:*",
-    "@tracedocs/scanner": "workspace:*",
+    "@tracedocs/graph": "workspace:*",
+    "@tracedocs/indexer": "workspace:*",
     "commander": "^12.1.0"
   },
   "devDependencies": {
