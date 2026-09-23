@@ -72,6 +72,9 @@ importers:
       '@tracedocs/indexer':
         specifier: workspace:*
         version: link:../indexer
+      '@tracedocs/validator':
+        specifier: workspace:*
+        version: link:../validator
       commander:
         specifier: ^12.1.0
         version: 12.1.0
@@ -249,6 +252,22 @@ importers:
       tsx:
         specifier: ^4.19.2
         version: 4.23.15
+      vitest:
+        specifier: ^3.2.4
+        version: 3.2.7(@types/debug@4.1.13)(@types/node@22.20.4)(tsx@4.23.15)
+
+  packages/validator:
+    dependencies:
+      '@tracedocs/core':
+        specifier: workspace:*
+        version: link:../core
+      '@tracedocs/graph':
+        specifier: workspace:*
+        version: link:../graph
+      '@tracedocs/parser-md':
+        specifier: workspace:*
+        version: link:../parser-md
+    devDependencies:
       vitest:
         specifier: ^3.2.4
         version: 3.2.7(@types/debug@4.1.13)(@types/node@22.20.4)(tsx@4.23.15)

@@ -6,6 +6,7 @@ import { createAnthropicProvider, createMockProvider, generateDocumentationUpdat
 import { GraphStore } from '@tracedocs/graph';
 import { indexRepository } from '@tracedocs/indexer';
 import { analyzeImpact } from '@tracedocs/impact-analyzer';
+import { applyPatch, validatePatch } from '@tracedocs/validator';
 import { Command } from 'commander';
 
 const program = new Command();
@@ -159,16 +160,22 @@ program
 program
   .command('generate')
   .description(
-    'Propose documentation patches for REVIEW-level findings on modified symbols since --base. ' +
-      "Defaults to a fully offline mock provider — use --provider anthropic for real generation " +
-      "(requires an Anthropic API key configured; see docs/architecture.md). Never writes to disk itself.",
+    'Propose documentation patches for REVIEW-level findings on modified symbols since --base, validate each ' +
+      'one, and optionally apply the valid ones to disk with --apply (requires --yes as explicit approval — ' +
+      "nothing is ever written without it). Defaults to a fully offline mock provider — use --provider " +
+      'anthropic for real generation (requires an Anthropic API key configured; see docs/architecture.md).',
   )
   .argument('[path]', 'repository path', '.')
   .requiredOption('--base <revision>', 'base revision to compare from')
   .option('--provider <name>', 'mock (default) or anthropic', 'mock')
-  .action(async (pathArg: string, options: { base: string; provider: string }) => {
+  .option('--apply', 'write valid, non-stale patches to disk (requires --yes)', false)
+  .option('--yes', 'explicit approval required to actually write anything with --apply', false)
+  .action(async (pathArg: string, options: { base: string; provider: string; apply: boolean; yes: boolean }) => {
     if (options.provider !== 'mock' && options.provider !== 'anthropic') {
       throw new Error(`Unknown provider "${options.provider}" — expected "mock" or "anthropic".`);
+    }
+    if (options.apply && !options.yes) {
+      throw new Error('--apply requires --yes as explicit confirmation that patches should be written to disk.');
     }
 
     const repoRoot = resolve(pathArg);
@@ -180,6 +187,7 @@ program
       const findings = analyzeImpact(changeSet, store, indexResult.repositoryId, indexResult.danglingReferences);
       const provider = options.provider === 'anthropic' ? createAnthropicProvider() : createMockProvider();
       const outcomes = await generateDocumentationUpdates(findings, changeSet, provider);
+      const validatorOptions = { store, repositoryId: indexResult.repositoryId };
 
       console.log(`Repository: ${repoRoot}`);
       console.log(`Provider:   ${provider.name}`);
@@ -193,28 +201,54 @@ program
         const location = finding.sectionHeading ?? '(whole page)';
         console.log(`\n${finding.documentPath} — ${location}`);
 
-        if (result.status === 'PROPOSED') {
-          console.log('  Status: PROPOSED');
-          console.log(`  Explanation: ${result.patch.explanation}`);
-          if (result.patch.assumptions.length > 0) {
-            console.log(`  Assumptions: ${result.patch.assumptions.join('; ')}`);
-          }
-          console.log('  --- original ---');
-          console.log(indent(result.patch.originalContent));
-          console.log('  --- proposed ---');
-          console.log(indent(result.patch.proposedContent));
-        } else if (result.status === 'NEEDS_MORE_INFORMATION') {
+        if (result.status === 'NEEDS_MORE_INFORMATION') {
           console.log('  Status: NEEDS_MORE_INFORMATION');
           console.log(`  Reason: ${result.reason}`);
-        } else {
+          continue;
+        }
+        if (result.status === 'PROVIDER_UNAVAILABLE') {
           console.log('  Status: PROVIDER_UNAVAILABLE');
           console.log(`  Reason: ${result.reason}`);
+          continue;
         }
+
+        console.log('  Status: PROPOSED');
+        console.log(`  Explanation: ${result.patch.explanation}`);
+        if (result.patch.assumptions.length > 0) {
+          console.log(`  Assumptions: ${result.patch.assumptions.join('; ')}`);
+        }
+        console.log('  --- original ---');
+        console.log(indent(result.patch.originalContent));
+        console.log('  --- proposed ---');
+        console.log(indent(result.patch.proposedContent));
+
+        const validation = await validatePatch(result.patch, repoRoot, validatorOptions);
+        printValidation(validation);
+
+        if (!options.apply) continue;
+
+        if (!validation.valid) {
+          console.log('  Not applied: validation failed (see issues above).');
+          continue;
+        }
+
+        const applyResult = await applyPatch(result.patch, repoRoot, validatorOptions);
+        console.log(applyResult.applied ? '  Applied.' : '  Not applied: became invalid immediately before writing.');
       }
     } finally {
       store.close();
     }
   });
+
+function printValidation(validation: Awaited<ReturnType<typeof validatePatch>>): void {
+  console.log(`  Validation: ${validation.valid ? 'valid' : 'INVALID'}`);
+  for (const issue of validation.issues) {
+    console.log(`    [${issue.severity}] ${issue.check}: ${issue.message}`);
+  }
+  if (validation.checksNotPerformed.length > 0) {
+    console.log(`    (not checked: ${validation.checksNotPerformed.join(', ')})`);
+  }
+}
 
 function indent(text: string): string {
   return text

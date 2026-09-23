@@ -1,0 +1,20 @@
+{
+  "name": "@tracedocs/validator",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -b",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@tracedocs/core": "workspace:*",
+    "@tracedocs/graph": "workspace:*",
+    "@tracedocs/parser-md": "workspace:*"
+  },
+  "devDependencies": {
+    "vitest": "^3.2.4"
+  }
+}

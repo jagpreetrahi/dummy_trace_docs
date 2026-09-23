@@ -5,3 +5,4 @@ export * from './graph-types.js';
 export * from './change-types.js';
 export * from './impact-types.js';
 export * from './generator-types.js';
+export * from './validator-types.js';

@@ -23,7 +23,7 @@ packages/
 ├── change-analyzer/  git diff -> structured change set (Milestone 5 — done)
 ├── impact-analyzer/  graph-based documentation impact rules (Milestone 6 — done)
 ├── generator/        LLM provider abstraction + patch generation (Milestone 7 — done)
-├── validator/         Markdown/patch validation (Milestone 8)
+├── validator/         Markdown/patch validation + safe local apply (Milestone 8 — done)
 ├── cli/              `tracedocs` command line entry point
 ├── server/           Fastify API over the graph (Milestone 4 — done)
 └── web/              React/Vite/Cytoscape graph explorer (Milestone 4 — done)
@@ -490,6 +490,80 @@ receives a bounded context object, not the whole repository.
   changed since the patch was generated?) and explicit user approval —
   is Milestone 8's validator, not this package's job.
 
+## Key decisions made in Milestone 8
+
+- **`ProposedPatch` sections are re-located by heading text on every
+  validate/apply call, never by a remembered line range.** Milestone 7's
+  `ProposedPatch` deliberately doesn't store a line range (see its Key
+  decisions) — `locateSection` re-parses the *current* document with
+  `parser-md` and matches by `sectionHeading` text, reusing the exact
+  same section-boundary logic the indexer used to derive the section in
+  the first place. This is what makes "has this section's content
+  changed since the patch was generated" a real comparison instead of a
+  coordinate that could point at the wrong place after any unrelated
+  edit earlier in the file.
+- **DB persistence of `analysis_runs`/`impact_findings`/`proposed_patches`
+  was deferred, and a real schema problem is why.** The brief's CLI
+  example (§17) shows `tracedocs apply <patch-id>` as a separate command
+  against previously stored results, and the schema for exactly this
+  exists since Milestone 3's migration. Attempting to actually wire it up
+  this milestone surfaced a real mismatch: `impact_findings.node_id` is
+  `NOT NULL REFERENCES nodes(id)`, but a `removed`-symbol finding has no
+  live node to reference — its node was already deleted by the time the
+  finding exists. Properly fixing that means either a migration (nullable
+  `node_id`, or storing a stable-id string instead of an FK) or reworking
+  what `node_id` means for a finding whose subject is gone. Rather than
+  force that schema rework into this milestone, `tracedocs generate
+  --apply` validates and applies within one invocation — every item in
+  Milestone 8's task list (validation, diff display, explicit approval,
+  safe application) works without persisted state. Revisit when Milestone
+  9's report generator needs persistence for its own reasons anyway.
+- **Structural issues are `error` (block applying); link/anchor/
+  content-heuristic issues are `warning` (surfaced, never blocking).**
+  A patch that doesn't parse, has an unclosed fence, contains a malformed
+  annotation, or no longer matches the live document is not safe to
+  write under any circumstance. A broken link, an anchor to a heading
+  that doesn't exist, or content that shrank dramatically are all worth
+  a human's attention but are exactly the kind of judgment call the
+  brief says a deterministic validator shouldn't unilaterally block on
+  (§H: successful validation isn't proof every statement is correct —
+  the inverse holds too: a content-quality *heuristic* firing isn't
+  proof something is actually wrong).
+- **`applyPatch` always re-runs `validatePatch` itself, immediately
+  before writing** — never trusts a validation result the caller already
+  computed, even when the CLI just printed one a few lines earlier in the
+  same process. The file can change on disk between "show the user what
+  would happen" and "actually write it" (however small that window is
+  locally), and the brief is explicit the staleness check has to guard
+  the write itself, not just inform a review screen.
+- **"Explicit user approval" is a required `--yes` flag, not an
+  interactive prompt.** A live TTY confirmation would need to handle
+  non-interactive contexts (CI, scripted runs) as a special case anyway,
+  and requiring a flag that must be deliberately passed satisfies "never
+  modify the repository until the user explicitly accepts" just as well
+  — arguably more legibly, since the approval is visible in the command
+  itself rather than an interaction lost to scrollback. `--apply` without
+  `--yes` fails fast, before any provider call or file read, rather than
+  generating patches nobody asked to have written and then discovering
+  the approval is missing.
+- **Path safety is checked once, in one place (`resolveSafePath`), and
+  every read or write goes through it.** `readDocument` and `applyPatch`'s
+  write step both resolve the target against `repoRoot` and refuse
+  anything that would land outside it — including via a malicious-looking
+  relative link target discovered during link-checking, not just the
+  patch's own `documentPath`. A single choke point here matters more than
+  it would for a read-only check: this is the one place in the pipeline
+  so far that writes to a path derived from pipeline data.
+- **Link/anchor checks only cover links introduced or kept by the
+  proposed content, checked against the full resulting document (current
+  content with the patch spliced in), not the patch's isolated text.** A
+  link from the patched section to another section elsewhere in the same
+  doc is legitimate and must not be flagged just because that other
+  section isn't part of the diff; a pre-existing broken link elsewhere in
+  the document isn't this patch's fault to report. Both required
+  reconstructing the "what will this document look like after applying"
+  view rather than validating the patch text in isolation.
+
 ## Trust boundaries (see brief §12)
 
 - The scanner never executes repository code or documentation content —
@@ -754,8 +828,61 @@ mock provider (a documented, modified function correctly produced a
 `PROPOSED` patch) and the CLI's provider-name validation (an unknown
 `--provider` value fails clearly instead of silently falling back).
 
-**Not yet implemented:** validation and patch application (Milestone 8)
-and GitHub integration (Milestone 9). Within graph scope specifically:
+**Milestone 8 (validation and patch review) is implemented and tested:**
+
+- `@tracedocs/validator` — `validatePatch(patch, repoRoot, options?)` runs
+  every deterministic check from brief §H: patch applicability/staleness
+  (re-locates the section by heading text in the *current* document and
+  compares its exact text against `patch.originalContent`), Markdown
+  structure (parses the proposal, checks code-fence balance, checks any
+  `tracedocs:` annotations are well-formed), broken internal links and
+  invalid anchors (checked against the full resulting document, not the
+  patch text in isolation, so a link to another section of the same doc
+  isn't wrongly flagged), an accidental-deletion heuristic (a dramatic,
+  unexplained size shrink), and — when a `GraphStore` is supplied —
+  annotation-target resolution against the live graph. Structural issues
+  are `error` (block applying); link/anchor/deletion-heuristic issues are
+  `warning` (surfaced, never blocking, since successful validation was
+  never claimed to prove correctness). `applyPatch(patch, repoRoot,
+  options?)` always re-validates immediately before writing and never
+  writes anything if that re-validation fails; every path write goes
+  through `resolveSafePath`, refusing anything that would escape the
+  repository root.
+- CLI: `tracedocs generate` now validates every `PROPOSED` patch and
+  prints the results; `--apply` (which requires `--yes`, checked before
+  any work starts) writes valid, non-stale patches to disk and reports
+  exactly what happened to each one — applied, or why not.
+
+45 tests: section re-location (page-level, by heading, heading no longer
+found), applicability (matches / doc unreadable / section gone / stale
+text), structure (well-formed / unclosed fence / malformed annotation),
+links and anchors (valid anchor across sections, invalid anchor, valid
+relative link, broken relative link, a path-traversal attempt, external
+links always skipped), the accidental-deletion heuristic (flags a
+drastic shrink, doesn't flag a reasonable edit or short content or
+growth), annotation-target resolution (resolves / unresolved / ambiguous
+/ skips already-malformed annotations), the `validatePatch` orchestrator
+(valid patch, stale patch, unclosed fence, `checksNotPerformed` populated
+correctly for both the no-graph-store and section-not-found cases), and
+`applyPatch` (writes correctly while preserving untouched content,
+refuses and leaves the file untouched for a stale patch/invalid proposal/
+path-escaping document path, and is idempotent — a second `apply` call
+against its own output correctly reports the patch as now stale). Full
+workspace: 220 tests. A real bug was caught immediately by the first test
+run (not left to manual testing this time): a hand-written "well-formed"
+test fixture had its opening code fence on the same line as prose text,
+which isn't valid Markdown fence syntax — the fence-balance check
+correctly flagged it as unclosed; the test fixture was wrong, not the
+checker. Manually verified end-to-end against a real fixture repository:
+dry-run printing a diff and a `valid` validation result, `--apply`
+without `--yes` failing fast with a clear message, `--apply --yes`
+correctly writing the file while preserving unrelated content, and a
+subsequent run correctly finding nothing left to flag once the
+underlying finding was resolved.
+
+**Not yet implemented:** GitHub integration (Milestone 9), and persisted
+analysis runs/findings/patches (see the Milestone 8 decisions above for
+the schema issue driving that deferral). Within graph scope specifically:
 `TESTS`/`REFERENCES`/`CONFIGURES`/`EXPOSES`/`LINKS_TO` edge types and
 `api_endpoint`/`configuration_item`/`test`/`code_example` node types exist
 in the brief's model but nothing populates them yet — see the

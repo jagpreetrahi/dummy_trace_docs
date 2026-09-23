@@ -16,9 +16,9 @@ Early, incremental build. **Implemented so far: Milestone 1 (repository
 scanning), Milestone 2 (JS/TS + Markdown parsing), Milestone 3 (the
 persistent dependency graph), Milestone 4 (an HTTP API and a React graph
 explorer over it), Milestone 5 (git change analysis), Milestone 6
-(documentation impact analysis), and Milestone 7 (documentation patch
-generation).** Validation/patch application and GitHub integration are
-not built yet.
+(documentation impact analysis), Milestone 7 (documentation patch
+generation), and Milestone 8 (validation and safe local patch
+application).** GitHub integration is not built yet.
 
 ## Requirements
 
@@ -120,7 +120,22 @@ anthropic` for real generation, which needs an Anthropic API key
 available the way the SDK normally resolves one (`ANTHROPIC_API_KEY`, or
 `ant auth login`). Every outcome is printed, including
 `NEEDS_MORE_INFORMATION` and `PROVIDER_UNAVAILABLE` ones — nothing is
-silently skipped. Never writes to disk; that's Milestone 8.
+silently skipped. Every proposed patch is also validated (Markdown
+structure, code fences, annotations, links/anchors, an
+accidental-deletion heuristic, staleness) and the results are printed
+alongside it.
+
+Add `--apply` to actually write valid, non-stale patches to disk —
+requires `--yes` as explicit confirmation, checked before any work
+starts:
+
+```sh
+node packages/cli/dist/index.js generate <path-to-repo> --base <revision> --apply --yes
+```
+
+Nothing is ever written without `--yes`, and nothing invalid or stale is
+ever written even with it — each patch is re-validated immediately
+before its write, independent of the validation already shown above it.
 
 ## Development
 
@@ -146,6 +161,9 @@ pnpm run typecheck # builds project references and reports type errors
 | `@tracedocs/change-analyzer` | Git-revision comparison and symbol-level change detection |
 | `@tracedocs/impact-analyzer` | Graph-based documentation impact findings for a change set |
 | `@tracedocs/generator` | LLM provider abstraction + patch generation (mock + Anthropic adapters) |
+| `@tracedocs/validator` | Patch validation (structure, links, staleness) + safe local application |
 | `@tracedocs/cli` | `tracedocs` command line entry point |
 
-More packages (`validator`) are added as their milestones land.
+All packages from the brief's MVP scope now exist; remaining milestones
+(GitHub integration) extend the CLI/workflow rather than adding new
+packages.

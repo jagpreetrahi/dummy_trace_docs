@@ -17,6 +17,7 @@
     "@tracedocs/graph": "workspace:*",
     "@tracedocs/impact-analyzer": "workspace:*",
     "@tracedocs/indexer": "workspace:*",
+    "@tracedocs/validator": "workspace:*",
     "commander": "^12.1.0"
   },
   "devDependencies": {
