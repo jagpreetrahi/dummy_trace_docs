@@ -20,7 +20,7 @@ packages/
 ├── parser-md/        Markdown section/annotation extraction (Milestone 2 — done)
 ├── graph/            SQLite-backed dependency graph + migrations (Milestone 3 — done)
 ├── indexer/          wires scanner+parsers+graph into indexRepository() (Milestone 3 — done)
-├── change-analyzer/  git diff -> structured change set (Milestone 5)
+├── change-analyzer/  git diff -> structured change set (Milestone 5 — done)
 ├── impact-analyzer/  graph-based documentation impact rules (Milestone 6)
 ├── generator/        LLM provider abstraction + patch generation (Milestone 7)
 ├── validator/         Markdown/patch validation (Milestone 8)
@@ -264,6 +264,83 @@ receives a bounded context object, not the whole repository.
   testing during this milestone: the raw schema vocabulary was
   reported as confusing on first use of the explorer.
 
+## Key decisions made in Milestone 5
+
+- **Rename detection uses git's own `-M` flag, not our own heuristic.**
+  The scanner's Milestone 1 diffing (content-hash comparison against a
+  manifest) has no way to know a deleted path and an added path are the
+  same file — it necessarily reports a rename as delete+add. `git diff
+  --name-status -M` compares blob similarity directly and reports `R###`
+  status lines, which is both more accurate and less code than
+  reimplementing similarity detection. The real constraint this exposes:
+  rename detection is fundamentally a *tracked-file* comparison — git has
+  nothing to correlate a change against for a file that was never staged
+  or committed. Tested and documented explicitly (not left as a silent
+  surprise): renaming a **committed** file between two revisions is
+  detected correctly; renaming an **uncommitted** file (working-tree-only)
+  is reported as delete+add, because that's genuinely what git itself can
+  see. `docs-code` doesn't try to work around this with content-hash
+  matching of its own — doing that only for the change-analyzer while the
+  graph indexer still can't see renames either would be an inconsistent,
+  partial fix; a real solution belongs in the scanner, not here.
+- **`git diff <base>` (no second ref) misses untracked new files —
+  handled by also calling `git ls-files --others --exclude-standard`.**
+  This was caught by the test suite, not anticipated: `getChangedFiles`
+  initially only wrapped `git diff --name-status`, and a test for "added
+  file against the working tree" failed because a brand-new, never-staged
+  file is invisible to plain `git diff` (it only diffs what git already
+  tracks). Untracked files are now unioned in explicitly, and this
+  behavior — plus its interaction with the rename limitation above — is
+  covered by tests, not just fixed and left undocumented.
+- **Symbol changes are detected by comparing each matched symbol's own
+  source text, not by diffing a synthesized "signature."** `parser-ts`
+  doesn't extract parameter lists or return types as structured fields
+  (Milestone 2's scope was declarations/imports/exports/calls, not full
+  type signatures), so there's no signature object to diff. Instead, each
+  symbol's own line range is sliced from the old and new file content
+  (using *that symbol's own* location in *its own* file version, never a
+  shared line offset — line numbers shift when unrelated code earlier in
+  the file changes) and hashed; a mismatch means something inside that
+  symbol changed. This correctly catches parameter changes, body changes,
+  and JSDoc changes alike, at the cost of not being able to say
+  *specifically* "the second parameter's type changed" — only "this
+  symbol's source differs." That coarser evidence is what
+  `SymbolChange.evidence` honestly reports.
+- **Symbols are matched between revisions by `(kind, qualifiedName)`, not
+  by stable id.** A symbol's `stableId` embeds its file path
+  (`src/token.ts#refreshAccessToken:function`), so the *same* symbol in
+  the old and new revision has *different* stable ids whenever the file
+  changes — which includes the exact rename/move cases this milestone
+  needs to detect. Matching on kind + qualified name only (ignoring path)
+  is what lets a moved symbol be recognized as "the same symbol,
+  elsewhere" instead of two unrelated stable ids.
+- **A "move" requires exact matching text, not just a matching name.**
+  Two unrelated functions both named `helper` with different bodies are
+  not a move — they're a removal in one file and an addition in another,
+  reported separately. Only when the qualified name *and* kind *and* the
+  full source text hash all match across two different files is it
+  confident enough to call a "move" rather than a coincidence. Tested
+  explicitly (`moveDetection.test.ts`) with both a same-named/
+  different-content case and a different-named/same-content case, to
+  pin down that neither alone is sufficient evidence.
+- **No signature-level "changed exports" detection beyond what falls out
+  of symbol diffing.** The brief's Change Analyzer section (§E) lists
+  "changed exports" as its own bullet; Milestone 5's explicit task list
+  (§16) does not. In practice, adding/removing the `export` keyword on an
+  otherwise-unchanged declaration already surfaces as a `modified` symbol
+  change (the modifier is part of the declaration's own source range), so
+  the common case is covered without a dedicated export-list differ.
+  Explicit re-export changes (`export { x } from './y'` added/removed with
+  no corresponding local declaration change) are not separately detected —
+  documented here as a known gap rather than silently missing it.
+- **`change-analyzer` does not depend on `graph` or `indexer`.** It only
+  needs git and the two Milestone 2 parsers to answer "what changed."
+  Consuming a `ChangeSet` together with the persistent graph to decide
+  *which documentation* is affected is the impact analyzer's job
+  (Milestone 6) — keeping this package graph-free is what Engineering
+  Rule #3 ("separate parsing, graph logic, change analysis, impact
+  analysis, and generation") means in practice here.
+
 ## Trust boundaries (see brief §12)
 
 - The scanner never executes repository code or documentation content —
@@ -408,13 +485,49 @@ testing being a gap to close before Milestone 4 would be called fully done
 by the brief's own testing requirements (§13 doesn't enumerate UI tests
 explicitly, but "test important behavior" (§18 rule 9) applies here too).
 
-**Not yet implemented:** change analysis (Milestone 5 — currently
-`indexRepository` diffs the working tree against the graph's last-indexed
-state, not two arbitrary git revisions), impact analysis, generation,
-validation, and GitHub integration. Within graph scope specifically:
+**Milestone 5 (git change analysis) is implemented and tested:**
+
+- `@tracedocs/change-analyzer` — `analyzeChanges(repoRoot, baseRevision,
+  targetRevision?)` compares an arbitrary base revision against either
+  another arbitrary revision or the current working tree (when
+  `targetRevision` is omitted), and returns a `ChangeSet`:
+  - **File changes**: added, modified, deleted, renamed — renames via
+    git's own `-M` detection (not a delete/add heuristic), untracked new
+    files folded in via `git ls-files --others` since plain `git diff`
+    against the working tree can't see them.
+  - **Symbol changes**: added, removed, modified (matched across
+    revisions by kind + qualified name, never by stable id or line
+    number, since both change under a rename/move; a matched pair is
+    "modified" only when its own source text actually differs), and moved
+    (a removed symbol and an added symbol in a *different* file, with
+    identical kind, qualified name, *and* source text — never inferred
+    from the name alone).
+  - Both revisions resolved to full commit SHAs in the result
+    (`targetRevision: null` means "the working tree", never a ref string
+    that could mean different things at different times).
+- CLI: `tracedocs analyze [path] --base <revision> [--target <revision>]`
+  prints the file and symbol changes.
+
+16 tests using real temporary git repositories, covering: added/modified/
+deleted/renamed files (committed and working-tree cases, including the
+documented uncommitted-rename limitation above), a function's parameters
+changing, a function's documentation-relevant text staying byte-identical
+across an unrelated line shift elsewhere in the file (proving location
+lookups aren't line-number-fragile), an added function, a documented
+function being deleted, an unrelated file's changes not producing symbol
+noise, markdown changes never being reported as symbol changes, a function
+moving verbatim between files, and two negative cases pinning down that
+neither a matching name alone nor matching content alone is sufficient
+evidence for "moved." Full workspace: 147 tests.
+
+**Not yet implemented:** impact analysis, generation, validation, and
+GitHub integration. Within graph scope specifically:
 `TESTS`/`REFERENCES`/`CONFIGURES`/`EXPOSES`/`LINKS_TO` edge types and
 `api_endpoint`/`configuration_item`/`test`/`code_example` node types exist
 in the brief's model but nothing populates them yet — see the
 `GraphNodeType`/`GraphEdgeType` unions in `packages/core/src/graph-types.ts`
-for exactly what's live. See the milestone list in the project brief for
-sequencing.
+for exactly what's live. Within change-analysis scope: no dedicated
+export-list diffing beyond what symbol-level diffing already surfaces (see
+Milestone 5 decisions above), and route/configuration-declaration changes
+aren't detected since those aren't extracted as symbols at all yet. See
+the milestone list in the project brief for sequencing.

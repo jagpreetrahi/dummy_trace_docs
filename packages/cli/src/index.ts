@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { mkdir } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
+import { analyzeChanges } from '@tracedocs/change-analyzer';
 import { GraphStore } from '@tracedocs/graph';
 import { indexRepository } from '@tracedocs/indexer';
 import { Command } from 'commander';
@@ -78,6 +79,34 @@ program
       }
     } finally {
       store.close();
+    }
+  });
+
+program
+  .command('analyze')
+  .description('Analyze what changed between two git revisions (target defaults to the working tree)')
+  .argument('[path]', 'repository path', '.')
+  .requiredOption('--base <revision>', 'base revision to compare from')
+  .option('--target <revision>', 'target revision to compare to (default: the working tree)')
+  .action(async (pathArg: string, options: { base: string; target?: string }) => {
+    const repoRoot = resolve(pathArg);
+    const result = await analyzeChanges(repoRoot, options.base, options.target);
+
+    console.log(`Repository: ${repoRoot}`);
+    console.log(`Base:       ${result.baseRevision}`);
+    console.log(`Target:     ${result.targetRevision ?? '(working tree)'}`);
+    console.log(`Files changed: ${result.fileChanges.length}`);
+    for (const file of result.fileChanges) {
+      const label =
+        file.changeType === 'renamed' ? `${file.previousPath} -> ${file.path}` : file.path;
+      console.log(`  ${file.changeType.padEnd(8)} ${label}`);
+    }
+
+    if (result.symbolChanges.length > 0) {
+      console.log(`Symbol changes: ${result.symbolChanges.length}`);
+      for (const symbol of result.symbolChanges) {
+        console.log(`  [${symbol.changeType}] ${symbol.description}`);
+      }
     }
   });
 

@@ -7,6 +7,7 @@
     { "path": "packages/parser-md" },
     { "path": "packages/graph" },
     { "path": "packages/indexer" },
+    { "path": "packages/change-analyzer" },
     { "path": "packages/server" },
     { "path": "packages/cli" }
   ]

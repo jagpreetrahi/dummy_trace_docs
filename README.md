@@ -12,10 +12,10 @@ current implementation status.
 
 Early, incremental build. **Implemented so far: Milestone 1 (repository
 scanning), Milestone 2 (JS/TS + Markdown parsing), Milestone 3 (the
-persistent dependency graph), and Milestone 4 (an HTTP API and a React
-graph explorer over it).** Change analysis against arbitrary git revisions,
-impact analysis, generation, validation, and GitHub integration are not
-built yet.
+persistent dependency graph), Milestone 4 (an HTTP API and a React graph
+explorer over it), and Milestone 5 (git change analysis).** Impact
+analysis, generation, validation, and GitHub integration are not built
+yet.
 
 ## Requirements
 
@@ -70,6 +70,21 @@ via the CLI — see `docs/architecture.md` for why), then explore it: search,
 click nodes, expand neighbors, filter by type, and highlight the path
 between two nodes.
 
+### Analyzing what changed
+
+Compare an arbitrary base revision against another revision, or against
+the current working tree (uncommitted changes) by omitting `--target`:
+
+```sh
+node packages/cli/dist/index.js analyze <path-to-repo> --base <revision> [--target <revision>]
+```
+
+Reports added/modified/deleted/renamed files and, for JS/TS files, which
+functions/classes/methods were added, removed, modified, or moved to a
+different file. Renames and moves are only reliably detected when the
+relevant side is committed (or staged) — see `docs/architecture.md` for
+why an uncommitted rename can't be told apart from an unrelated delete+add.
+
 ## Development
 
 ```sh
@@ -91,7 +106,8 @@ pnpm run typecheck # builds project references and reports type errors
 | `@tracedocs/indexer` | Wires the scanner and both parsers into the graph |
 | `@tracedocs/server` | Fastify HTTP API over the graph |
 | `@tracedocs/web` | React/Vite/Cytoscape.js graph explorer |
+| `@tracedocs/change-analyzer` | Git-revision comparison and symbol-level change detection |
 | `@tracedocs/cli` | `tracedocs` command line entry point |
 
-More packages (`change-analyzer`, `impact-analyzer`, `generator`,
-`validator`) are added as their milestones land.
+More packages (`impact-analyzer`, `generator`, `validator`) are added as
+their milestones land.
